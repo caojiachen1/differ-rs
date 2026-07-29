@@ -11,7 +11,7 @@ pub mod state;
 use std::sync::Arc;
 use state::AppState;
 use commands::{
-    scan_folder, get_thumbnail, show_in_folder,
+    scan_folder, get_thumbnail, read_image, show_in_folder,
     load_model, get_backend_info, extract_features, search_similar, compare_folders,
     get_cache_stats, clear_cache,
 };
@@ -75,6 +75,7 @@ pub fn run() {
             // Filesystem commands
             scan_folder,
             get_thumbnail,
+            read_image,
             show_in_folder,
             // Inference commands
             load_model,

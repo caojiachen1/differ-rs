@@ -30,6 +30,18 @@ pub async fn get_thumbnail(
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
+/// Read a full image file and return its bytes as base64.
+#[tauri::command]
+pub async fn read_image(path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        use base64::Engine;
+        let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read image: {}", e))?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 /// Reveal a file in the system file manager (Explorer / Finder / xdg-open).
 #[tauri::command]
 pub async fn show_in_folder(path: String) -> Result<(), String> {

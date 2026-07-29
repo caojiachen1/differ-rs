@@ -26,7 +26,7 @@ import {
 } from '@fluentui/react-icons';
 import { api } from '../services/tauriApi';
 
-export type BackendKind = 'ggml' | 'onnx';
+export type BackendKind = 'ggml' | 'onnx' | 'candle';
 
 interface SettingsDialogProps {
   open: boolean;
@@ -94,13 +94,20 @@ export function SettingsDialog({
               >
                 <Radio value="ggml" label="GGML (CUDA, fastest)" />
                 <Radio value="onnx" label="ONNX Runtime" />
+                <Radio value="candle" label="Candle (CUDA)" />
               </RadioGroup>
               <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
                 <div style={{ flex: 1 }}>
                   <Label size="small" htmlFor="model-path">Model Path (optional, auto-detected)</Label>
                   <Input
                     id="model-path"
-                    placeholder={backend === 'ggml' ? 'models/dinov3_vits16.bin' : 'models/model.onnx'}
+                    placeholder={
+                      backend === 'ggml'
+                        ? 'models/dinov3_vits16.bin'
+                        : backend === 'candle'
+                          ? 'models/dinov3_vits16.safetensors'
+                          : 'models/model.onnx'
+                    }
                     value={modelPath}
                     onChange={(_, data) => setModelPath(data.value)}
                     size="small"

@@ -26,7 +26,7 @@ candle-nn = { version = "0.11", optional = true }
 ort = { version = "2.0.0-rc.12", optional = true, features = ["tensorrt", "cuda", "directml"] }
 
 [features]
-default = ["onnx", "ggml-cuda"]
+default = ["onnx", "ggml-cuda", "candle-cuda"]
 ggml = ["dep:dinov3-ggml"]
 # GGML backend with CUDA GPU acceleration (requires CUDA toolkit at build time)
 ggml-cuda = ["ggml", "dinov3-ggml/cuda"]

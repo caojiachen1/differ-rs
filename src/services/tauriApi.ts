@@ -47,15 +47,21 @@ export const api = {
     invoke<number[]>('get_thumbnail', { path, size }),
 
   /**
+   * Read the full image file as base64
+   */
+  readImage: (path: string): Promise<string> =>
+    invoke<string>('read_image', { path }),
+
+  /**
    * Reveal a file in the system file manager (Explorer)
    */
   showInFolder: (path: string): Promise<void> =>
     invoke<void>('show_in_folder', { path }),
 
   /**
-   * Load the DINOv3 model with the given backend ('ggml' | 'onnx')
+   * Load the DINOv3 model with the given backend ('ggml' | 'onnx' | 'candle')
    */
-  loadModel: (backend?: 'ggml' | 'onnx', modelPath?: string): Promise<string> =>
+  loadModel: (backend?: 'ggml' | 'onnx' | 'candle', modelPath?: string): Promise<string> =>
     invoke<string>('load_model', { backend: backend || null, modelPath: modelPath || null }),
 
   /**

@@ -17,9 +17,9 @@ import {
   TargetRegular,
   FolderOpenRegular,
 } from '@fluentui/react-icons';
-import { open } from '@tauri-apps/plugin-shell';
 import { api } from '../services/tauriApi';
 import type { ImageEntry } from '../services/tauriApi';
+import { ImageViewer } from './ImageViewer';
 
 interface ImageGridProps {
   images: ImageEntry[];
@@ -39,6 +39,7 @@ export function ImageGrid({
   const [searchQuery, setSearchQuery] = useState('');
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; image: ImageEntry } | null>(null);
   const [thumbnailCache, setThumbnailCache] = useState<Map<string, string>>(new Map());
+  const [preview, setPreview] = useState<ImageEntry | null>(null);
 
   // Filter images by search query
   const filteredImages = useMemo(() => {
@@ -70,12 +71,8 @@ export function ImageGrid({
     setContextMenu({ x: e.clientX, y: e.clientY, image });
   }, []);
 
-  const handleDoubleClick = useCallback(async (image: ImageEntry) => {
-    try {
-      await open(image.path);
-    } catch (e) {
-      console.error('Failed to open image:', e);
-    }
+  const handleDoubleClick = useCallback((image: ImageEntry) => {
+    setPreview(image);
   }, []);
 
   const handleOpenLocation = useCallback(async (image: ImageEntry) => {
@@ -154,6 +151,16 @@ export function ImageGrid({
           <Spinner size="large" />
           <div className="loading-overlay-text">{loadingMessage || 'Loading...'}</div>
         </div>
+      )}
+
+      {/* Image preview lightbox */}
+      {preview && (
+        <ImageViewer
+          path={preview.path}
+          fileName={preview.file_name}
+          placeholderSrc={getThumbnailSrc(preview)}
+          onClose={() => setPreview(null)}
+        />
       )}
 
       {/* Context Menu */}

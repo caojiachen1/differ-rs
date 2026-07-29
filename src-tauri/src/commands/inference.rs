@@ -26,6 +26,7 @@ pub fn resolve_model_path(backend: &str, explicit: Option<&str>) -> Result<PathB
 
     let (env_var, file_names): (&str, &[&str]) = match backend {
         "ggml" => ("GGML_MODEL_PATH", &["dinov3_vits16.bin"]),
+        "candle" => ("CANDLE_MODEL_PATH", &["dinov3_vits16.safetensors"]),
         // Prefer the unquantized F32 model, fall back to Q4
         _ => ("ONNX_MODEL_PATH", &["model.onnx", "model_q4.onnx"]),
     };
@@ -61,12 +62,50 @@ pub fn resolve_model_path(backend: &str, explicit: Option<&str>) -> Result<PathB
     ))
 }
 
-/// Create and load an inference backend ("ggml" or "onnx").
+/// Directory into which auto-downloaded models are stored.
+///
+/// Prefers the workspace models/ directory (development), falls back to
+/// models/ next to the executable (production).
+fn default_models_dir() -> PathBuf {
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../models");
+    if dev.exists() {
+        return dev;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            return dir.join("models");
+        }
+    }
+    PathBuf::from("models")
+}
+
+/// Download the model for a backend from ModelScope (blocking).
+pub fn download_model_for_backend(backend: &str) -> Result<PathBuf, String> {
+    let dir = default_models_dir();
+    log::info!("Auto-downloading {} model into {:?} ...", backend, dir);
+    let result = match backend {
+        "ggml" => crate::dinov3::backend::ggml::GgmlBackend::download_model(&dir),
+        "onnx" => crate::dinov3::backend::onnx::OnnxBackend::download_model(&dir),
+        #[cfg(feature = "candle")]
+        "candle" => crate::dinov3::backend::candle::CandleBackend::download_model(&dir),
+        other => return Err(format!("Unknown backend: {}", other)),
+    };
+    result.map_err(|e| format!("Failed to download {} model: {:#}", backend, e))
+}
+
+/// Create and load an inference backend ("ggml", "onnx" or "candle").
 pub fn create_backend(backend: &str, model_path: &Path) -> Result<Box<dyn InferenceBackend>, String> {
     let mut b: Box<dyn InferenceBackend> = match backend {
         "ggml" => Box::new(crate::dinov3::backend::ggml::GgmlBackend::new()),
         "onnx" => Box::new(crate::dinov3::backend::onnx::OnnxBackend::new()),
-        other => return Err(format!("Unknown backend: {} (expected \"ggml\" or \"onnx\")", other)),
+        #[cfg(feature = "candle")]
+        "candle" => Box::new(crate::dinov3::backend::candle::CandleBackend::new()),
+        other => {
+            return Err(format!(
+                "Unknown backend: {} (expected \"ggml\", \"onnx\" or \"candle\")",
+                other
+            ))
+        }
     };
     b.load_model(model_path)
         .map_err(|e| format!("Failed to load {} model: {:#}", backend, e))?;
@@ -74,6 +113,9 @@ pub fn create_backend(backend: &str, model_path: &Path) -> Result<Box<dyn Infere
 }
 
 /// Load the DINOv3 model with the requested backend ("ggml" by default).
+///
+/// If no model file is found locally (and no explicit path was given), the
+/// model is downloaded automatically from ModelScope first.
 #[tauri::command]
 pub async fn load_model(
     backend: Option<String>,
@@ -81,19 +123,24 @@ pub async fn load_model(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let backend_kind = backend.unwrap_or_else(|| "ggml".to_string());
-    let resolved = resolve_model_path(&backend_kind, model_path.as_deref())?;
 
     let backend_arc = Arc::clone(&state.backend);
     let kind = backend_kind.clone();
-    let resolved_clone = resolved.clone();
+    let explicit = model_path.clone();
 
-    tokio::task::spawn_blocking(move || {
-        let loaded = create_backend(&kind, &resolved_clone)?;
+    let resolved = tokio::task::spawn_blocking(move || {
+        let resolved = match resolve_model_path(&kind, explicit.as_deref()) {
+            Ok(p) => p,
+            // No model on disk and no explicit path: fetch it automatically.
+            Err(_) if explicit.is_none() => download_model_for_backend(&kind)?,
+            Err(e) => return Err(e),
+        };
+        let loaded = create_backend(&kind, &resolved)?;
         let mut guard = backend_arc
             .lock()
             .map_err(|e| format!("Failed to lock backend: {}", e))?;
         *guard = Some(loaded);
-        Ok::<_, String>(())
+        Ok::<PathBuf, String>(resolved)
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))??;

@@ -10,9 +10,9 @@
 //!   - LayerScale (gamma) on attention and MLP residual branches
 //!   - LayerNorm eps = 1e-5, exact-erf GELU
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use candle_core::{DType, Device, Tensor, D};
@@ -723,6 +723,43 @@ impl CandleBackend {
             device: Device::Cpu,
             info: None,
         }
+    }
+
+    /// Download the DINOv3 safetensors weights (HF Transformers format) from ModelScope.
+    ///
+    /// Downloads `dinov3_vits16.safetensors` to the specified directory and
+    /// returns the path to the model file.
+    pub fn download_model(output_dir: &Path) -> Result<PathBuf> {
+        const MODEL_URL: &str = "https://modelscope.cn/models/cjc1887415157/dinov3-ggml/resolve/master/dinov3_vits16.safetensors";
+
+        std::fs::create_dir_all(output_dir)
+            .context("Failed to create model output directory")?;
+
+        let model_path = output_dir.join("dinov3_vits16.safetensors");
+
+        if !model_path.exists() {
+            log::info!("Downloading dinov3_vits16.safetensors ...");
+            Self::download_file(MODEL_URL, &model_path)?;
+            log::info!("Downloaded dinov3_vits16.safetensors to {:?}", model_path);
+        } else {
+            log::info!("dinov3_vits16.safetensors already exists at {:?}", model_path);
+        }
+
+        Ok(model_path)
+    }
+
+    /// Download a file from a URL using curl.
+    fn download_file(url: &str, dest: &Path) -> Result<()> {
+        let status = std::process::Command::new("curl")
+            .args(["-L", "-o", &dest.to_string_lossy(), "--progress-bar", url])
+            .status()
+            .context("Failed to execute curl - is curl installed?")?;
+
+        if !status.success() {
+            bail!("curl failed with exit code: {:?}", status.code());
+        }
+
+        Ok(())
     }
 
     /// Load model from VitWeights (internal format).

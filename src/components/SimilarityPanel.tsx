@@ -19,9 +19,9 @@ import {
   ArrowRightRegular,
 } from '@fluentui/react-icons';
 import { open } from '@tauri-apps/plugin-dialog';
-import { open as shellOpen } from '@tauri-apps/plugin-shell';
 import { api } from '../services/tauriApi';
 import type { ImageEntry, SimilarityResult } from '../services/tauriApi';
+import { ImageViewer } from './ImageViewer';
 
 interface SimilarityPanelProps {
   sourceImage: ImageEntry | null;
@@ -48,6 +48,7 @@ export function SimilarityPanel({
 }: SimilarityPanelProps) {
   const [thumbnailCache, setThumbnailCache] = useState<Map<string, string>>(new Map());
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; result: SimilarityResult } | null>(null);
+  const [preview, setPreview] = useState<{ path: string; file_name: string; thumbnail: string | null } | null>(null);
 
   // Same context-menu behavior as the left grid
   const handleContextMenu = useCallback((e: React.MouseEvent, result: SimilarityResult) => {
@@ -55,12 +56,8 @@ export function SimilarityPanel({
     setContextMenu({ x: e.clientX, y: e.clientY, result });
   }, []);
 
-  const handleDoubleClick = useCallback(async (result: SimilarityResult) => {
-    try {
-      await shellOpen(result.path);
-    } catch (e) {
-      console.error('Failed to open image:', e);
-    }
+  const handleDoubleClick = useCallback((result: SimilarityResult) => {
+    setPreview(result);
   }, []);
 
   const handleOpenLocation = useCallback(async (result: SimilarityResult) => {
@@ -178,6 +175,7 @@ export function SimilarityPanel({
               src={getSourceThumbSrc(sourceImage)}
               alt={sourceImage.file_name}
               className="source-image-thumb"
+              onDoubleClick={() => setPreview(sourceImage)}
             />
             <div className="source-image-info">
               <div className="source-image-name" title={sourceImage.file_name}>
@@ -250,6 +248,20 @@ export function SimilarityPanel({
           <Spinner size="large" />
           <div className="loading-overlay-text">{loadingMessage || 'Processing...'}</div>
         </div>
+      )}
+
+      {/* Image preview lightbox */}
+      {preview && (
+        <ImageViewer
+          path={preview.path}
+          fileName={preview.file_name}
+          placeholderSrc={
+            preview.thumbnail
+              ? `data:image/jpeg;base64,${preview.thumbnail}`
+              : undefined
+          }
+          onClose={() => setPreview(null)}
+        />
       )}
 
       {/* Context Menu (same style/options as the left grid) */}
