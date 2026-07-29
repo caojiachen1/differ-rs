@@ -1,0 +1,21 @@
+# Rust
+/target
+/src-tauri/target
+**/*.rs.bk
+*.pdb
+
+# Node / frontend
+/node_modules
+/dist
+*.log
+
+# Models and generated inference artifacts (weights, ONNX, TensorRT engines)
+/models
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+test/

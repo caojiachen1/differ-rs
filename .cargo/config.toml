@@ -1,0 +1,13 @@
+# Cargo build configuration for differ-rust workspace.
+# Adds Windows system libraries required by the GGML CPU backend
+# (registry access functions in advapi32).
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=advapi32.lib"]
+
+# nvcc host-compiler flags required to build CUDA kernels (candle-kernels,
+# dinov3-ggml) under CUDA 13.x + MSVC:
+#   /Zc:preprocessor  - CUDA 13 CCCL headers reject MSVC's traditional preprocessor
+#   /MD               - match Rust's dynamic CRT so libmoe.a links without LNK2038
+[env]
+NVCC_PREPEND_FLAGS = "-Xcompiler /Zc:preprocessor -Xcompiler /MD"

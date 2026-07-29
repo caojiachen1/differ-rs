@@ -1,0 +1,47 @@
+[package]
+name = "differ-tauri"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+image = { workspace = true }
+rayon = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+walkdir = "2"
+base64 = "0.22"
+
+# Inference backends (merged from the former dinov3-core crate)
+dinov3-ggml = { git = "https://github.com/caojiachen1/dinov3-ggml", optional = true }
+candle-core = { version = "0.11", optional = true }
+candle-nn = { version = "0.11", optional = true }
+ort = { version = "2.0.0-rc.12", optional = true, features = ["tensorrt", "cuda", "directml"] }
+
+[features]
+default = ["onnx", "ggml-cuda"]
+ggml = ["dep:dinov3-ggml"]
+# GGML backend with CUDA GPU acceleration (requires CUDA toolkit at build time)
+ggml-cuda = ["ggml", "dinov3-ggml/cuda"]
+onnx = ["dep:ort"]
+candle = ["dep:candle-core", "dep:candle-nn"]
+# Candle backend with CUDA GPU acceleration (requires CUDA toolkit at build time)
+candle-cuda = ["candle", "candle-core/cuda", "candle-nn/cuda"]
+
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[lib]
+name = "differ_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
