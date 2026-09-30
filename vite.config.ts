@@ -13,8 +13,11 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     watch: {
-      // tell vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // tell vite to ignore watching `src-tauri` and the Cargo `target` dir.
+      // The workspace `target/` lives at the project root and contains
+      // `*.dll` artifacts that get locked by cargo during builds, which
+      // crashes Vite's file watcher with EBUSY on Windows.
+      ignored: ["**/src-tauri/**", "**/target/**"],
     },
   },
 
