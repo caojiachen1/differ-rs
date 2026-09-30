@@ -3,7 +3,7 @@
 //! Run with:
 //!   cargo run -p dinov3-core --features ggml --example ggml_demo
 //!
-//! Uses test/1.jpg, test/2.png, test/3.jpg and reports:
+//! Uses test/1, test/2, test/3 (.jpg preferred, .png fallback) and reports:
 //!   similarity(1, 2) and similarity(1, 3)
 
 use std::path::PathBuf;
@@ -56,18 +56,21 @@ fn main() {
     }
     println!("Model loaded in {:.2?}", t.elapsed());
 
-    // 2. Load 3 test images
+    // 2. Load 3 test images (prefer .jpg, fall back to .png)
     let test_dir = workspace_root().join("test");
-    let image_files = ["1.jpg", "2.png", "3.jpg"];
+    let image_bases = ["1", "2", "3"];
 
     let mut features: Vec<(String, Vec<f32>)> = Vec::new();
 
-    for name in &image_files {
-        let path = test_dir.join(name);
+    for base in &image_bases {
+        let jpg_path = test_dir.join(format!("{base}.jpg"));
+        let png_path = test_dir.join(format!("{base}.png"));
+        let path = if jpg_path.exists() { jpg_path } else { png_path };
         if !path.exists() {
-            eprintln!("ERROR: Test image not found: {}", path.display());
+            eprintln!("ERROR: Test image not found: {base}.jpg / {base}.png under {}", test_dir.display());
             std::process::exit(1);
         }
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
 
         let img_data = std::fs::read(&path).expect("Failed to read image");
         let t = Instant::now();
@@ -90,8 +93,8 @@ fn main() {
     let sim_2_3 = cosine_similarity(&features[1].1, &features[2].1);
 
     println!("\n--- Results ---");
-    println!("  sim(1.jpg, 2.png) = {:.4}", sim_1_2);
-    println!("  sim(1.jpg, 3.jpg) = {:.4}", sim_1_3);
-    println!("  sim(2.png, 3.jpg) = {:.4}", sim_2_3);
+    println!("  sim({}, {}) = {:.4}", features[0].0, features[1].0, sim_1_2);
+    println!("  sim({}, {}) = {:.4}", features[0].0, features[2].0, sim_1_3);
+    println!("  sim({}, {}) = {:.4}", features[1].0, features[2].0, sim_2_3);
     println!("\n=== Done ===");
 }

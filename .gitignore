@@ -12,6 +12,9 @@
 # Models and generated inference artifacts (weights, ONNX, TensorRT engines)
 /models
 
+# Benchmark results (bench_perf.bat output)
+/bench_results
+
 # OS / editor
 .DS_Store
 Thumbs.db
