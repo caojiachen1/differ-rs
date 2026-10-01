@@ -16,6 +16,7 @@ env_logger = { workspace = true }
 image = { workspace = true }
 fast_image_resize = "6"
 rayon = { workspace = true }
+clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 walkdir = "2"
 base64 = "0.22"
