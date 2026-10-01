@@ -24,6 +24,12 @@ export interface ProgressInfo {
   message: string;
 }
 
+export interface ScanProgressInfo {
+  files_found: number;
+  elapsed_secs: number;
+  files_per_second: number;
+}
+
 export interface SimilarityResult {
   path: string;
   file_name: string;
@@ -49,6 +55,14 @@ export const api = {
    */
   getThumbnail: (path: string, size: number): Promise<number[]> =>
     invoke<number[]>('get_thumbnail', { path, size }),
+
+  /**
+   * Base64 JPEG thumbnails for a batch of images, generated in parallel
+   * and served from a bounded in-memory cache on the Rust side. One entry
+   * per input path (null on failure).
+   */
+  getThumbnails: (paths: string[], size: number): Promise<(string | null)[]> =>
+    invoke<(string | null)[]>('get_thumbnails', { paths, size }),
 
   /**
    * Read the full image file as base64

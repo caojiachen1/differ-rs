@@ -3,11 +3,10 @@
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use image::codecs::jpeg::JpegEncoder;
 use image::DynamicImage;
-use rayon::prelude::*;
 use walkdir::WalkDir;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use crate::state::ImageEntry;
 
 /// Supported image file extensions.
@@ -21,16 +20,35 @@ fn is_image_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Progress update emitted during a folder scan.
+pub struct ScanProgress {
+    /// Image files found so far.
+    pub files_found: usize,
+    /// Seconds elapsed since the scan started.
+    pub elapsed_secs: f64,
+}
+
 /// Scan a folder for images.
 ///
-/// # Arguments
-/// * `folder_path` - Path to the folder to scan
-/// * `recursive` - Whether to scan subfolders recursively
-/// * `generate_thumbnails` - Whether to generate thumbnails for each image
-///
-/// # Returns
-/// A vector of ImageEntry containing metadata and optional thumbnails.
-pub fn scan_folder(folder_path: &str, recursive: bool, generate_thumbnails: bool) -> Result<Vec<ImageEntry>, String> {
+/// Metadata comes straight from the directory enumeration (walkdir's
+/// DirEntry metadata on Windows is the FindFirstFile data — no extra stat
+/// syscall per file), which is what makes 100k-file folders scan in about
+/// a second. Thumbnails are NOT generated here: the UI requests them
+/// lazily per visible window via [`get_thumbnails_batch`].
+pub fn scan_folder(folder_path: &str, recursive: bool) -> Result<Vec<ImageEntry>, String> {
+    scan_folder_with_progress(folder_path, recursive, |_| {})
+}
+
+/// Scan a folder, reporting progress roughly every 250 ms
+/// (`files_found`, `files_per_second`).
+pub fn scan_folder_with_progress(
+    folder_path: &str,
+    recursive: bool,
+    mut on_progress: impl FnMut(ScanProgress),
+) -> Result<Vec<ImageEntry>, String> {
+    let start = std::time::Instant::now();
+    let mut last_emit = std::time::Instant::now();
+
     let path = Path::new(folder_path);
     if !path.exists() {
         return Err(format!("Folder does not exist: {}", folder_path));
@@ -67,15 +85,16 @@ pub fn scan_folder(folder_path: &str, recursive: bool, generate_thumbnails: bool
             continue;
         }
 
-        let file_path = entry.path();
-        let metadata = match fs::metadata(file_path) {
+        // Metadata from the enumeration itself — no per-file stat syscall
+        let metadata = match entry.metadata() {
             Ok(m) => m,
             Err(e) => {
-                log::warn!("Error reading metadata for {:?}: {}", file_path, e);
+                log::warn!("Error reading metadata for {:?}: {}", entry.path(), e);
                 continue;
             }
         };
 
+        let file_path = entry.path();
         let modified = metadata.modified()
             .ok()
             .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
@@ -91,22 +110,78 @@ pub fn scan_folder(folder_path: &str, recursive: bool, generate_thumbnails: bool
             modified,
             thumbnail: None,
         });
+
+        if last_emit.elapsed().as_millis() >= 250 {
+            last_emit = std::time::Instant::now();
+            on_progress(ScanProgress {
+                files_found: entries.len(),
+                elapsed_secs: start.elapsed().as_secs_f64(),
+            });
+        }
     }
 
-    // Generate thumbnails in parallel across all cores (decode is the bottleneck)
-    if generate_thumbnails {
-        entries.par_iter_mut().for_each(|entry| {
-            match generate_thumbnail(&entry.path, 150) {
-                Ok(data) => entry.thumbnail = Some(BASE64.encode(data)),
-                Err(e) => log::warn!("Error generating thumbnail for {}: {}", entry.path, e),
-            }
-        });
-    }
+    on_progress(ScanProgress {
+        files_found: entries.len(),
+        elapsed_secs: start.elapsed().as_secs_f64(),
+    });
 
     // Sort by file name
     entries.sort_by(|a, b| a.file_name.cmp(&b.file_name));
 
     Ok(entries)
+}
+
+/// In-memory thumbnail cache: paths -> base64 JPEG, bounded so a long
+/// browsing session on a 100k-image folder cannot grow without limit.
+const THUMB_CACHE_CAP: usize = 4096;
+
+fn thumb_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Generate base64 thumbnails for a batch of images in parallel, served
+/// from the bounded in-memory cache where possible. Returns one entry per
+/// input path (None when the thumbnail could not be generated).
+pub fn get_thumbnails_batch(paths: &[String], size: u32) -> Vec<Option<String>> {
+    use rayon::prelude::*;
+
+    let mut cache = thumb_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let results: Vec<Option<String>> = paths
+        .par_iter()
+        .map(|p| {
+            if let Some(hit) = cache.get(p) {
+                return Some(hit.clone());
+            }
+            match thumbnail_base64(p, size) {
+                Some(b64) => Some(b64),
+                None => None, // failed lookups are not cached; retryable
+            }
+        })
+        .collect();
+
+    // Insert misses into the cache under a capacity bound
+    for (p, r) in paths.iter().zip(&results) {
+        if let Some(b64) = r {
+            if !cache.contains_key(p) {
+                if cache.len() >= THUMB_CACHE_CAP {
+                    // Drop ~256 pseudo-oldest entries: cheap, avoids a full
+                    // LRU bookkeeping structure on the hot path
+                    let victims: Vec<String> = cache
+                        .keys()
+                        .take(256)
+                        .cloned()
+                        .collect();
+                    for v in victims {
+                        cache.remove(&v);
+                    }
+                }
+                cache.insert(p.clone(), b64.clone());
+            }
+        }
+    }
+    results
 }
 
 /// Generate a thumbnail for an image.

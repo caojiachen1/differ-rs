@@ -545,3 +545,18 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Virtualized grid: placeholder shown while a visible card's thumbnail
+   is still being generated on the backend */
+.image-card-placeholder {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(100deg, var(--app-bg) 30%, rgba(255,255,255,0.06) 50%, var(--app-bg) 70%);
+  background-size: 200% 100%;
+  animation: card-shimmer 1.2s linear infinite;
+}
+
+@keyframes card-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}

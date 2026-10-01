@@ -3,7 +3,7 @@
  */
 import { useState, useCallback, useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { api, type ImageEntry, type SimilarityResult, type ProgressInfo } from '../services/tauriApi';
+import { api, type ImageEntry, type SimilarityResult, type ProgressInfo, type ScanProgressInfo } from '../services/tauriApi';
 
 export type AppStatus = 'idle' | 'scanning' | 'extracting' | 'searching' | 'comparing' | 'error';
 
@@ -48,6 +48,26 @@ export function useInference() {
         // Only override the message while a long-running operation is active
         statusMessage: prev.status !== 'idle' && prev.status !== 'error' ? p.message : prev.statusMessage,
       }));
+    });
+    return () => {
+      unlisten.then(fn => fn());
+    };
+  }, []);
+
+  // Live progress from the backend while a folder is being scanned
+  useEffect(() => {
+    const unlisten = listen<ScanProgressInfo>('scan-progress', (event) => {
+      const p = event.payload;
+      setState(prev =>
+        prev.status === 'scanning'
+          ? {
+              ...prev,
+              statusMessage: `Scanning: ${p.files_found.toLocaleString()} images found (${Math.round(
+                p.files_per_second
+              ).toLocaleString()} files/s)`,
+            }
+          : prev
+      );
     });
     return () => {
       unlisten.then(fn => fn());
