@@ -560,3 +560,41 @@ body {
   from { background-position: 100% 0; }
   to { background-position: -100% 0; }
 }
+
+/* Lightbox navigation (prev/next within the opened collection) */
+.image-viewer-arrow {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background var(--transition-fast, 0.15s);
+}
+.image-viewer-arrow:hover {
+  background: rgba(0, 0, 0, 0.7);
+}
+.image-viewer-arrow.left { left: 20px; }
+.image-viewer-arrow.right { right: 20px; }
+
+.image-viewer-position {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 13px;
+  user-select: none;
+}

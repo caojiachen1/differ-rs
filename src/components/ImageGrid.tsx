@@ -56,7 +56,9 @@ export function ImageGrid({
 }: ImageGridProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; image: ImageEntry } | null>(null);
-  const [preview, setPreview] = useState<ImageEntry | null>(null);
+  /** Index of the previewed image within `filteredImages`; null = closed.
+   *  Drives the lightbox AND its arrow navigation. */
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [thumbnails, setThumbnails] = useState<Map<string, string>>(new Map());
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -114,7 +116,36 @@ export function ImageGrid({
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: 0 });
     setThumbnails(new Map());
+    setPreviewIndex(null);
   }, [images]);
+
+  // Derived preview (guarded against list/filter shrinking while open)
+  const previewImage =
+    previewIndex !== null && previewIndex < filteredImages.length
+      ? filteredImages[previewIndex]
+      : null;
+
+  // While the lightbox is open, make sure the shown image has a thumbnail
+  // so the backdrop shows it while the full file loads
+  useEffect(() => {
+    if (!previewImage || thumbnails.get(previewImage.path)) return;
+    let cancelled = false;
+    api.getThumbnails([previewImage.path], 150)
+      .then(([b64]) => {
+        if (!cancelled && b64) {
+          setThumbnails(prev => new Map(prev).set(previewImage.path, `data:image/jpeg;base64,${b64}`));
+        }
+      })
+      .catch(e => console.error('Preview thumbnail fetch failed:', e));
+    return () => { cancelled = true; };
+  }, [previewImage, thumbnails]);
+
+  const stepPreview = useCallback((delta: number) => {
+    setPreviewIndex(i => {
+      if (i === null || filteredImages.length === 0) return i;
+      return (i + delta + filteredImages.length) % filteredImages.length;
+    });
+  }, [filteredImages.length]);
 
   // --- Lazy thumbnails: micro-batch requests for the visible window ---
   // `inflight` deliberately survives effect re-runs: paths queued during a
@@ -217,11 +248,12 @@ export function ImageGrid({
     setContextMenu({ x: e.clientX, y: e.clientY, image });
   }, []);
 
-  const handleDoubleClick = useCallback((image: ImageEntry) => {
-    // Re-generate this image's thumbnail (bypasses caches) and open the
-    // full-size preview.
+  const handleDoubleClick = useCallback((image: ImageEntry, index: number) => {
+    // Re-generate this image's thumbnail (bypasses caches), open the
+    // full-size preview, and remember where it sits in the filtered list
+    // so the lightbox arrows can navigate the same collection.
     void reloadThumbnail(image);
-    setPreview(image);
+    setPreviewIndex(index);
   }, [reloadThumbnail]);
 
   const handleOpenLocation = useCallback(async (image: ImageEntry) => {
@@ -292,7 +324,7 @@ export function ImageGrid({
                     height: CARD,
                   }}
                   onContextMenu={(e) => handleContextMenu(e, image)}
-                  onDoubleClick={() => handleDoubleClick(image)}
+                  onDoubleClick={() => handleDoubleClick(image, index)}
                   role="button"
                   tabIndex={0}
                   aria-label={image.file_name}
@@ -321,12 +353,15 @@ export function ImageGrid({
       )}
 
       {/* Image preview lightbox */}
-      {preview && (
+      {previewImage && previewIndex !== null && (
         <ImageViewer
-          path={preview.path}
-          fileName={preview.file_name}
-          placeholderSrc={getThumbnailSrc(preview)}
-          onClose={() => setPreview(null)}
+          path={previewImage.path}
+          fileName={previewImage.file_name}
+          placeholderSrc={getThumbnailSrc(previewImage)}
+          onClose={() => setPreviewIndex(null)}
+          onPrev={() => stepPreview(-1)}
+          onNext={() => stepPreview(1)}
+          position={`${previewIndex + 1} / ${filteredImages.length}`}
         />
       )}
 

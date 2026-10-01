@@ -49,7 +49,28 @@ export function SimilarityPanel({
   const [thumbnailCache, setThumbnailCache] = useState<Map<string, string>>(new Map());
   const [sourceThumbs, setSourceThumbs] = useState<Map<string, string>>(new Map());
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; result: SimilarityResult } | null>(null);
-  const [preview, setPreview] = useState<{ path: string; file_name: string; thumbnail: string | null } | null>(null);
+  /**
+   * What the lightbox is showing. Result previews remember their index in
+   * `results` so the arrow buttons navigate within the results list; the
+   * source image is a single image and navigates nowhere.
+   */
+  const [preview, setPreview] = useState<
+    { kind: 'result'; index: number } | { kind: 'source' } | null
+  >(null);
+
+  const previewResult =
+    preview && preview.kind === 'result' ? results[preview.index] : undefined;
+  const previewSource = preview && preview.kind === 'source' ? sourceImage : undefined;
+
+  const stepPreview = useCallback((delta: number) => {
+    setPreview(prev => {
+      if (!prev || prev.kind !== 'result' || results.length === 0) return prev;
+      return {
+        kind: 'result',
+        index: (prev.index + delta + results.length) % results.length,
+      };
+    });
+  }, [results.length]);
 
   // Same context-menu behavior as the left grid
   const handleContextMenu = useCallback((e: React.MouseEvent, result: SimilarityResult) => {
@@ -58,8 +79,9 @@ export function SimilarityPanel({
   }, []);
 
   const handleDoubleClick = useCallback((result: SimilarityResult) => {
-    setPreview(result);
-  }, []);
+    const index = results.findIndex(r => r.path === result.path);
+    if (index >= 0) setPreview({ kind: 'result', index });
+  }, [results]);
 
   const handleOpenLocation = useCallback(async (result: SimilarityResult) => {
     try {
@@ -190,7 +212,7 @@ export function SimilarityPanel({
               src={getSourceThumbSrc(sourceImage)}
               alt={sourceImage.file_name}
               className="source-image-thumb"
-              onDoubleClick={() => setPreview(sourceImage)}
+              onDoubleClick={() => setPreview({ kind: 'source' })}
             />
             <div className="source-image-info">
               <div className="source-image-name" title={sourceImage.file_name}>
@@ -266,15 +288,22 @@ export function SimilarityPanel({
       )}
 
       {/* Image preview lightbox */}
-      {preview && (
+      {preview && preview.kind === 'result' && previewResult && (
         <ImageViewer
-          path={preview.path}
-          fileName={preview.file_name}
-          placeholderSrc={
-            preview.thumbnail
-              ? `data:image/jpeg;base64,${preview.thumbnail}`
-              : undefined
-          }
+          path={previewResult.path}
+          fileName={previewResult.file_name}
+          placeholderSrc={getThumbnailSrc(previewResult)}
+          onClose={() => setPreview(null)}
+          onPrev={() => stepPreview(-1)}
+          onNext={() => stepPreview(1)}
+          position={`${preview.index + 1} / ${results.length}`}
+        />
+      )}
+      {preview && preview.kind === 'source' && previewSource && (
+        <ImageViewer
+          path={previewSource.path}
+          fileName={previewSource.file_name}
+          placeholderSrc={getSourceThumbSrc(previewSource)}
           onClose={() => setPreview(null)}
         />
       )}
