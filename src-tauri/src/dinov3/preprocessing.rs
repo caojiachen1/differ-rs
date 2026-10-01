@@ -3,12 +3,24 @@
 //! Converts raw image bytes into a normalized NCHW tensor suitable for
 //! Vision Transformer input. The pipeline:
 //! 1. Decodes the image from bytes
-//! 2. Resizes to the model's expected input dimensions (e.g., 518x518)
+//! 2. Resizes to the model's expected input dimensions (e.g., 518x518 or
+//!    256x256) with a SIMD Lanczos3 kernel (`fast_image_resize`)
 //! 3. Converts to RGB float32
 //! 4. Normalizes pixels to [0,1] then applies ImageNet standardization
+//!
+//! Must stay in lockstep with the identical pipeline inside the
+//! `dinov3-ggml` crate: all backends must see the same pixel input for
+//! cross-backend feature comparisons to be meaningful. The SIMD kernel is
+//! not bit-identical to the previous `image`-crate implementation (same
+//! Lanczos3 filter; differences are a few hundredths of a u8 level on
+//! average, verified by the oracle example in dinov3-ggml).
 
 use anyhow::{Context, Result};
-use image::{DynamicImage, imageops::FilterType};
+use fast_image_resize::{
+    images::Image as FirImage, FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer,
+};
+use image::DynamicImage;
+
 use crate::dinov3::config::ModelConfig;
 
 /// Preprocess raw image bytes into a normalized NCHW float tensor.
@@ -23,28 +35,37 @@ pub fn preprocess_image(image_data: &[u8], config: &ModelConfig) -> Result<Vec<f
 
 /// Preprocess a DynamicImage into a normalized NCHW float tensor.
 pub fn preprocess_dynamic_image(img: &DynamicImage, config: &ModelConfig) -> Result<Vec<f32>> {
-    // Resize using Lanczos3
-    let resized = img.resize_exact(
-        config.input_width as u32,
-        config.input_height as u32,
-        FilterType::Lanczos3,
-    );
-    
-    let rgb = resized.to_rgb8();
-    let (width, height) = (rgb.width() as usize, rgb.height() as usize);
-    let pixels = rgb.as_raw();
-    
+    let rgb = img.to_rgb8();
+    let width = rgb.width() as usize;
+    let height = rgb.height() as usize;
+    let pixels = rgb.into_raw();
+
+    // SIMD resize (Lanczos3, same filter as before)
+    let src_image = FirImage::from_vec_u8(width as u32, height as u32, pixels, PixelType::U8x3)
+        .context("Invalid source image buffer")?;
+    let mut dst_image = FirImage::new(config.input_width as u32, config.input_height as u32, PixelType::U8x3);
+    let mut resizer = Resizer::new();
+    let options =
+        ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3));
+    resizer
+        .resize(&src_image, &mut dst_image, Some(&options))
+        .context("Resize failed")?;
+
+    let width = dst_image.width() as usize;
+    let height = dst_image.height() as usize;
+    let pixels = dst_image.buffer();
+
     // Convert HWC -> NCHW with normalization
     let num_pixels = width * height;
     let mut tensor = vec![0.0f32; 3 * num_pixels];
-    
+
     for y in 0..height {
         for x in 0..width {
             let src_idx = (y * width + x) * 3;
             let r = pixels[src_idx] as f32 / 255.0;
             let g = pixels[src_idx + 1] as f32 / 255.0;
             let b = pixels[src_idx + 2] as f32 / 255.0;
-            
+
             // ImageNet standardization
             let dst_idx = y * width + x;
             tensor[dst_idx] = (r - config.image_mean[0]) / config.image_std[0];           // Channel 0 (R)
@@ -52,14 +73,14 @@ pub fn preprocess_dynamic_image(img: &DynamicImage, config: &ModelConfig) -> Res
             tensor[2 * num_pixels + dst_idx] = (b - config.image_mean[2]) / config.image_std[2]; // Channel 2 (B)
         }
     }
-    
+
     Ok(tensor)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_preprocess_output_shape() {
         let config = ModelConfig::vit_small_16();
@@ -69,7 +90,7 @@ mod tests {
         // Should be 3 * 518 * 518
         assert_eq!(result.len(), 3 * 518 * 518);
     }
-    
+
     #[test]
     fn test_preprocess_normalization() {
         let config = ModelConfig::vit_small_16();

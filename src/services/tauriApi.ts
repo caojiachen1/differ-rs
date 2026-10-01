@@ -17,6 +17,10 @@ export interface ProgressInfo {
   processed: number;
   cache_hits: number;
   cache_misses: number;
+  /** Recent processing speed in images/second (0 when not applicable) */
+  images_per_second?: number;
+  /** Seconds elapsed since the operation started */
+  elapsed_secs?: number;
   message: string;
 }
 

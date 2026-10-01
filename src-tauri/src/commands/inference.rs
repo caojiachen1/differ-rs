@@ -96,7 +96,10 @@ pub fn download_model_for_backend(backend: &str) -> Result<PathBuf, String> {
 /// Create and load an inference backend ("ggml", "onnx" or "candle").
 pub fn create_backend(backend: &str, model_path: &Path) -> Result<Box<dyn InferenceBackend>, String> {
     let mut b: Box<dyn InferenceBackend> = match backend {
-        "ggml" => Box::new(crate::dinov3::backend::ggml::GgmlBackend::new()),
+        "ggml" => Box::new(
+            crate::dinov3::backend::ggml::GgmlBackend::new()
+                .with_feature_pool(crate::services::similarity_service::feature_pooling_enabled()),
+        ),
         "onnx" => Box::new(crate::dinov3::backend::onnx::OnnxBackend::new()),
         #[cfg(feature = "candle")]
         "candle" => Box::new(crate::dinov3::backend::candle::CandleBackend::new()),
@@ -177,6 +180,7 @@ pub async fn extract_features(
     let backend_arc = Arc::clone(&state.backend);
 
     let result = tokio::task::spawn_blocking(move || {
+        let started = std::time::Instant::now();
         let guard = backend_arc
             .lock()
             .map_err(|e| format!("Failed to lock backend: {}", e))?;
@@ -195,14 +199,24 @@ pub async fn extract_features(
             )?;
 
         let total = entries.len();
+        let elapsed = started.elapsed().as_secs_f64();
         Ok::<_, String>(ProgressInfo {
             total,
             processed: total,
             cache_hits,
             cache_misses,
+            images_per_second: if elapsed > 0.0 {
+                total as f64 / elapsed
+            } else {
+                0.0
+            },
+            elapsed_secs: elapsed,
             message: format!(
-                "Extracted features from {} images (Cache: {} hits, {} misses).",
-                total, cache_hits, cache_misses
+                "Extracted features from {} images (Cache: {} hits, {} misses) at {:.0} img/s.",
+                total,
+                cache_hits,
+                cache_misses,
+                if elapsed > 0.0 { total as f64 / elapsed } else { 0.0 }
             ),
         })
     })

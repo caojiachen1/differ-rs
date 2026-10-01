@@ -22,3 +22,13 @@ Thumbs.db
 .vscode/
 
 test/
+
+# Generated baseline-scan JPEGs (dinov3-ggml mkbaseline output)
+/test_baseline
+
+# Generated benchmark folder
+/bench_img
+/bench_img_base
+/bench_img_prog
+/bench_real_base
+/bench_real_prog

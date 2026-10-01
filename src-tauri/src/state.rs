@@ -98,6 +98,12 @@ pub struct ProgressInfo {
     /// Number of images that required fresh extraction.
     #[serde(default)]
     pub cache_misses: usize,
+    /// Recent processing speed in images/second (0 when not applicable).
+    #[serde(default)]
+    pub images_per_second: f64,
+    /// Seconds elapsed since the operation started.
+    #[serde(default)]
+    pub elapsed_secs: f64,
     /// Current status message.
     pub message: String,
 }

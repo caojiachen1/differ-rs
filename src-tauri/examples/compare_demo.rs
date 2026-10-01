@@ -30,6 +30,11 @@ fn workspace_root() -> PathBuf {
 
 fn main() {
     println!("=== DINOv3 Multi-Backend Comparison ===\n");
+    // Cross-backend comparison is only meaningful when every backend runs
+    // the same input resolution. The GGML backend defaults to the fast
+    // throughput tier (256x256), so pin it to the accuracy tier here.
+    std::env::set_var("GGML_VIT_TIER", "high");
+    println!("Note: GGML_VIT_TIER=high forced so all backends compare at 518x518.\n");
     let root = workspace_root();
 
     // Collect test images (sorted by name)
@@ -82,10 +87,17 @@ fn main() {
             .map(PathBuf::from)
             .unwrap_or_else(|_| root.join("models").join("dinov3_vits16.safetensors"));
         let t = Instant::now();
-        b.load_model(&m).expect("failed to load Candle model");
-        println!("Candle loaded in {:.2?}", t.elapsed());
-        names.push("candle".to_string());
-        backends.push(Box::new(b));
+        match b.load_model(&m) {
+            Ok(()) => {
+                println!("Candle loaded in {:.2?}", t.elapsed());
+                names.push("candle".to_string());
+                backends.push(Box::new(b));
+            }
+            Err(e) => println!(
+                "Candle SKIPPED ({}: {e:#}); place a safetensors model to include it",
+                m.display()
+            ),
+        }
     }
 
     let nb = backends.len();

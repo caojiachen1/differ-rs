@@ -67,6 +67,11 @@ export function StatusBar({
               {(progress.cache_hits > 0 || progress.cache_misses > 0) && (
                 <> (cache {progress.cache_hits} | new {progress.cache_misses})</>
               )}
+              {!!progress.images_per_second && progress.images_per_second > 0 && (
+                <> · {progress.images_per_second >= 100
+                  ? Math.round(progress.images_per_second)
+                  : progress.images_per_second.toFixed(1)} img/s</>
+              )}
             </span>
           </span>
         )}

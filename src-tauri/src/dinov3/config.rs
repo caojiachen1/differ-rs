@@ -52,6 +52,15 @@ impl ModelConfig {
         }
     }
 
+    /// Feature dimension of this configuration: sequence_length * hidden_size,
+    /// where sequence_length = 1 CLS + register tokens + patch grid.
+    /// Used to validate cached feature vectors against the active model.
+    pub fn output_dim(&self) -> usize {
+        (1 + self.num_register_tokens
+            + (self.input_height / self.patch_size) * (self.input_width / self.patch_size))
+            * self.hidden_size
+    }
+
     /// ViT-B/16 configuration (Base).
     ///
     /// - 768 hidden dims, 12 layers, 12 heads, 3072 intermediate size

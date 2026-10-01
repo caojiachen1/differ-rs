@@ -77,6 +77,16 @@ pub fn open_cache(folder_path: &str) -> Result<Connection, String> {
     let conn = Connection::open(&db_path)
         .map_err(|e| format!("Failed to open cache database: {}", e))?;
 
+    // WAL + NORMAL sync: feature blobs are large (hundreds of KB per image)
+    // and written from a background thread; WAL decouples readers from the
+    // writer and removes the per-transaction fsync stall. .NET readers
+    // (Microsoft.Data.Sqlite) read WAL databases transparently.
+    let _: String = conn
+        .query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))
+        .map_err(|e| format!("Failed to set WAL mode: {}", e))?;
+    conn.execute_batch("PRAGMA synchronous=NORMAL;")
+        .map_err(|e| format!("Failed to set synchronous mode: {}", e))?;
+
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS ImageFeatures (
             FilePath TEXT PRIMARY KEY,
@@ -102,9 +112,16 @@ pub fn open_cache(folder_path: &str) -> Result<Connection, String> {
 
 /// Retrieve cached features for an image.
 ///
-/// Returns None when not cached or when the file changed (size/mtime mismatch),
-/// matching the .NET lookup `WHERE FilePath = ? AND FileSize = ? AND LastModified = ?`.
-pub fn get_features(conn: &Connection, path: &str) -> Result<Option<Vec<f32>>, String> {
+/// Returns None when not cached, when the file changed (size/mtime mismatch),
+/// or when the cached vector's dimension doesn't match `expected_len` (model
+/// or input-resolution changed since it was written) — all are re-extracted.
+/// The file-identity lookup matches the .NET
+/// `WHERE FilePath = ? AND FileSize = ? AND LastModified = ?`.
+pub fn get_features(
+    conn: &Connection,
+    path: &str,
+    expected_len: usize,
+) -> Result<Option<Vec<f32>>, String> {
     let (file_size, last_modified) = file_identity(path)?;
 
     let mut stmt = conn
@@ -127,8 +144,12 @@ pub fn get_features(conn: &Connection, path: &str) -> Result<Option<Vec<f32>>, S
                 .chunks_exact(4)
                 .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
                 .collect();
-            if features.len() != len as usize || features.is_empty() {
-                // Inconsistent row: treat as miss so it gets re-extracted
+            if features.is_empty()
+                || features.len() != len as usize
+                || features.len() != expected_len
+            {
+                // Inconsistent row or stale dimension: treat as miss so it
+                // gets re-extracted with the active model configuration
                 return Ok(None);
             }
             Ok(Some(features))
@@ -228,18 +249,22 @@ mod tests {
         let features = vec![1.0f32, 2.0, 3.0, 4.0];
         store_features(&conn, img_path_str, &features).unwrap();
 
-        let retrieved = get_features(&conn, img_path_str).unwrap().unwrap();
+        let retrieved = get_features(&conn, img_path_str, 4).unwrap().unwrap();
         assert_eq!(retrieved.len(), 4);
         assert!((retrieved[0] - 1.0).abs() < 1e-6);
 
+        // A dimension mismatch (e.g. model/input resolution changed)
+        // invalidates the entry
+        assert!(get_features(&conn, img_path_str, 8).unwrap().is_none());
+
         // Modifying the file invalidates the entry (size changes)
         std::fs::write(&img_path, b"changed image data!!").unwrap();
-        assert!(get_features(&conn, img_path_str).unwrap().is_none());
+        assert!(get_features(&conn, img_path_str, 4).unwrap().is_none());
 
         // Batch store
         let f2 = vec![5.0f32, 6.0];
         store_features_batch(&mut conn, &[(img_path_str, &f2)]).unwrap();
-        assert_eq!(get_features(&conn, img_path_str).unwrap().unwrap(), f2);
+        assert_eq!(get_features(&conn, img_path_str, 2).unwrap().unwrap(), f2);
 
         let stats = get_cache_stats(folder_path).unwrap();
         assert_eq!(stats.cached_count, 1);
