@@ -14,15 +14,22 @@ interface ImageViewerProps {
   onClose: () => void;
 }
 
-function mimeFromPath(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase() ?? '';
-  switch (ext) {
-    case 'png': return 'image/png';
-    case 'gif': return 'image/gif';
-    case 'webp': return 'image/webp';
-    case 'bmp': return 'image/bmp';
-    default: return 'image/jpeg';
+function mimeFromBase64(b64: string): string {
+  // Sniff the magic bytes of the decoded payload — web-saved files often
+  // carry a mismatched extension, so the path suffix cannot be trusted.
+  try {
+    const bytes = atob(b64.slice(0, 32));
+    const sig = bytes.slice(0, 12);
+    if (sig.startsWith('\xFF\xD8\xFF')) return 'image/jpeg';
+    if (sig.startsWith('\x89PNG')) return 'image/png';
+    if (sig.startsWith('GIF8')) return 'image/gif';
+    if (sig.startsWith('BM')) return 'image/bmp';
+    if (sig.startsWith('RIFF') && sig.includes('WEBP')) return 'image/webp';
+    if (sig.includes('ftyp')) return 'image/avif';
+  } catch {
+    // fall through to the extension-based default
   }
+  return 'image/jpeg';
 }
 
 export function ImageViewer({ path, fileName, placeholderSrc, onClose }: ImageViewerProps) {
@@ -32,7 +39,7 @@ export function ImageViewer({ path, fileName, placeholderSrc, onClose }: ImageVi
     let cancelled = false;
     api.readImage(path)
       .then(b64 => {
-        if (!cancelled) setFullSrc(`data:${mimeFromPath(path)};base64,${b64}`);
+        if (!cancelled) setFullSrc(`data:${mimeFromBase64(b64)};base64,${b64}`);
       })
       .catch(e => console.error('Failed to load full image:', e));
     return () => { cancelled = true; };

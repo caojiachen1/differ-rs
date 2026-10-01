@@ -142,17 +142,21 @@ fn thumb_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, 
 }
 
 /// Generate base64 thumbnails for a batch of images in parallel, served
-/// from the bounded in-memory cache where possible. Returns one entry per
-/// input path (None when the thumbnail could not be generated).
-pub fn get_thumbnails_batch(paths: &[String], size: u32) -> Vec<Option<String>> {
+/// from the bounded in-memory cache where possible (`force` bypasses the
+/// cache read — used by the UI's "reload thumbnail" action; successful
+/// results are written back either way). Returns one entry per input path
+/// (None when the thumbnail could not be generated).
+pub fn get_thumbnails_batch(paths: &[String], size: u32, force: bool) -> Vec<Option<String>> {
     use rayon::prelude::*;
 
     let mut cache = thumb_cache().lock().unwrap_or_else(|e| e.into_inner());
     let results: Vec<Option<String>> = paths
         .par_iter()
         .map(|p| {
-            if let Some(hit) = cache.get(p) {
-                return Some(hit.clone());
+            if !force {
+                if let Some(hit) = cache.get(p) {
+                    return Some(hit.clone());
+                }
             }
             match thumbnail_base64(p, size) {
                 Some(b64) => Some(b64),
@@ -193,8 +197,17 @@ pub fn get_thumbnails_batch(paths: &[String], size: u32) -> Vec<Option<String>> 
 /// # Returns
 /// JPEG-encoded thumbnail data as bytes.
 pub fn generate_thumbnail(image_path: &str, size: u32) -> Result<Vec<u8>, String> {
-    let img = image::open(image_path)
-        .map_err(|e| format!("Failed to open image: {}", e))?;
+    // Detect the format from the file CONTENT, not the extension: web-saved
+    // files often carry mismatched extensions (png/avif/webp bytes named
+    // .jpg), and image::open trusts the extension and would fail to decode.
+    // Feature extraction already sniffs contents (load_from_memory), so this
+    // also fixes thumbnails missing for images that extract just fine.
+    let bytes = fs::read(image_path).map_err(|e| format!("Failed to read image: {}", e))?;
+    let img = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("Failed to detect image format: {}", e))?
+        .decode()
+        .map_err(|e| format!("Failed to decode image: {}", e))?;
 
     // Calculate new dimensions maintaining aspect ratio (never 0)
     let (width, height) = (img.width().max(1), img.height().max(1));
@@ -251,6 +264,27 @@ mod tests {
         assert!(!is_image_file(Path::new("test.txt")));
         assert!(!is_image_file(Path::new("test.pdf")));
         assert!(!is_image_file(Path::new("test")));
+    }
+
+    #[test]
+    fn test_thumbnail_sniffs_mismatched_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // PNG/WebP/GIF content named .jpg (web-saved files): thumbnails must
+        // sniff the format from the content, not trust the extension
+        let cases = [
+            ("png_as_jpg.jpg", image::ImageFormat::Png),
+            ("webp_as_jpg.jpg", image::ImageFormat::WebP),
+            ("gif_as_jpg.jpg", image::ImageFormat::Gif),
+        ];
+        for (name, format) in cases {
+            let path = tmp.path().join(name);
+            let img = image::RgbImage::from_pixel(64, 48, image::Rgb([10, 200, 30]));
+            img.save_with_format(&path, format).unwrap();
+            let thumb = generate_thumbnail(path.to_str().unwrap(), 150)
+                .unwrap_or_else(|e| panic!("thumbnail failed for {name}: {e}"));
+            assert!(!thumb.is_empty());
+        }
     }
 
     #[test]

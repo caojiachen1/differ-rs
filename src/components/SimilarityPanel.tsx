@@ -47,6 +47,7 @@ export function SimilarityPanel({
   onSetSource,
 }: SimilarityPanelProps) {
   const [thumbnailCache, setThumbnailCache] = useState<Map<string, string>>(new Map());
+  const [sourceThumbs, setSourceThumbs] = useState<Map<string, string>>(new Map());
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; result: SimilarityResult } | null>(null);
   const [preview, setPreview] = useState<{ path: string; file_name: string; thumbnail: string | null } | null>(null);
 
@@ -106,12 +107,26 @@ export function SimilarityPanel({
     return `asset://localhost/${encodeURIComponent(result.path)}`;
   }, [thumbnailCache]);
 
-  const getSourceThumbSrc = useCallback((image: ImageEntry): string => {
-    if (image.thumbnail) {
-      return `data:image/jpeg;base64,${image.thumbnail}`;
-    }
-    return `asset://localhost/${encodeURIComponent(image.path)}`;
-  }, []);
+  const getSourceThumbSrc = useCallback((image: ImageEntry): string | undefined => {
+    // Source image thumbnails are fetched on demand (the folder scan is
+    // metadata-only, so ImageEntry.thumbnail is always null)
+    return sourceThumbs.get(image.path) || undefined;
+  }, [sourceThumbs]);
+
+  // Fetch the source image's thumbnail whenever the source changes
+  // (scans no longer carry thumbnails in ImageEntry)
+  useEffect(() => {
+    if (!sourceImage || sourceThumbs.has(sourceImage.path)) return;
+    let cancelled = false;
+    api.getThumbnails([sourceImage.path], 150)
+      .then(([b64]) => {
+        if (!cancelled && b64) {
+          setSourceThumbs(prev => new Map(prev).set(sourceImage.path, `data:image/jpeg;base64,${b64}`));
+        }
+      })
+      .catch(e => console.error('Failed to load source thumbnail:', e));
+    return () => { cancelled = true; };
+  }, [sourceImage, sourceThumbs]);
 
   const getSimilarityClass = (sim: number): string => {
     const pct = sim * 100;

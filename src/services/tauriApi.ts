@@ -59,10 +59,11 @@ export const api = {
   /**
    * Base64 JPEG thumbnails for a batch of images, generated in parallel
    * and served from a bounded in-memory cache on the Rust side. One entry
-   * per input path (null on failure).
+   * per input path (null on failure). `force` re-generates entries that
+   * are cached.
    */
-  getThumbnails: (paths: string[], size: number): Promise<(string | null)[]> =>
-    invoke<(string | null)[]>('get_thumbnails', { paths, size }),
+  getThumbnails: (paths: string[], size: number, force?: boolean): Promise<(string | null)[]> =>
+    invoke<(string | null)[]>('get_thumbnails', { paths, size, force: force ?? false }),
 
   /**
    * Read the full image file as base64

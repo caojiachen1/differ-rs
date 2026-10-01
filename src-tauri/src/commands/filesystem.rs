@@ -62,15 +62,17 @@ pub async fn get_thumbnail(
 }
 
 /// Base64 JPEG thumbnails for a batch of images, generated in parallel and
-/// served from a bounded in-memory cache. One entry per input path (null
-/// on failure). Called by the UI for the visible window of the grid.
+/// served from a bounded in-memory cache (`force` bypasses cached entries).
+/// One entry per input path (null on failure). Called by the UI for the
+/// visible window of the grid.
 #[tauri::command]
 pub async fn get_thumbnails(
     paths: Vec<String>,
     size: u32,
+    force: Option<bool>,
 ) -> Result<Vec<Option<String>>, String> {
     tokio::task::spawn_blocking(move || {
-        Ok(image_service::get_thumbnails_batch(&paths, size))
+        Ok(image_service::get_thumbnails_batch(&paths, size, force.unwrap_or(false)))
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
