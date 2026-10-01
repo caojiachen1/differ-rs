@@ -16,6 +16,11 @@ use crate::dinov3::{InferenceBackend, ModelInfo};
 const FAST_TIER_INPUT: usize = 256;
 /// Batched-graph size for the fast tier (measured optimum on RTX 5080).
 const FAST_TIER_MAX_BATCH: usize = 32;
+/// Ultra tier: 224x224 (201 tokens). GPU-only ~2100 img/s on an RTX 5080 —
+/// enable when GPU throughput is the wall and a further small accuracy
+/// step-down is acceptable (GGML_VIT_TIER=ultra).
+const ULTRA_TIER_INPUT: usize = 224;
+const ULTRA_TIER_MAX_BATCH: usize = 32;
 /// Batched-graph size for the high tier (518x518, measured optimum).
 const HIGH_TIER_MAX_BATCH: usize = 4;
 
@@ -91,21 +96,30 @@ impl GgmlBackend {
         Ok(())
     }
 
+    /// Effective tier from GGML_VIT_TIER: "high" = 518x518 accuracy tier,
+    /// "ultra" = 224x224 max-throughput tier, default "fast" = 256x256.
+    fn tier() -> &'static str {
+        match std::env::var("GGML_VIT_TIER").as_deref() {
+            Ok(v) if v.eq_ignore_ascii_case("high") => "high",
+            Ok(v) if v.eq_ignore_ascii_case("ultra") => "ultra",
+            _ => "fast",
+        }
+    }
+
     /// Default to the max-throughput tier (256x256 + batched graph): batch
     /// folder extraction is ~4x faster than 518x518 there. Set
-    /// `GGML_VIT_TIER=high` for the accuracy-first 518x518 tier.
+    /// `GGML_VIT_TIER=high` for the accuracy-first 518x518 tier or `ultra`
+    /// for the 224x224 throughput tier.
     fn fast_tier() -> bool {
-        !std::env::var("GGML_VIT_TIER")
-            .map(|v| v.eq_ignore_ascii_case("high"))
-            .unwrap_or(false)
+        Self::tier() != "high"
     }
 
     /// Input resolution the backend actually runs at.
     fn effective_input(&self) -> (usize, usize) {
-        if Self::fast_tier() {
-            (FAST_TIER_INPUT, FAST_TIER_INPUT)
-        } else {
-            (self.config.input_height, self.config.input_width)
+        match Self::tier() {
+            "high" => (self.config.input_height, self.config.input_width),
+            "ultra" => (ULTRA_TIER_INPUT, ULTRA_TIER_INPUT),
+            _ => (FAST_TIER_INPUT, FAST_TIER_INPUT),
         }
     }
 
@@ -124,10 +138,10 @@ impl GgmlBackend {
             rope_freq_base: 100.0, // DINOv3 rope_theta
             image_mean: self.config.image_mean,
             image_std: self.config.image_std,
-            max_batch: if Self::fast_tier() {
-                FAST_TIER_MAX_BATCH
-            } else {
-                HIGH_TIER_MAX_BATCH
+            max_batch: match Self::tier() {
+                "high" => HIGH_TIER_MAX_BATCH,
+                "ultra" => ULTRA_TIER_MAX_BATCH,
+                _ => FAST_TIER_MAX_BATCH,
             },
             // Approximation stack of the fast tier only: the accuracy-first
             // high tier decodes at full resolution.

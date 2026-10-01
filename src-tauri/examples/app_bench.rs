@@ -39,7 +39,7 @@ fn main() {
     );
 
     // Diagnostics: how many images does the scanner actually see?
-    let scanned = differ_tauri_lib::services::image_service::scan_folder(&folder, true, false)
+    let scanned = differ_tauri_lib::services::image_service::scan_folder(&folder, true)
         .expect("scan failed");
     println!("[scan] {} entries on disk", scanned.len());
 

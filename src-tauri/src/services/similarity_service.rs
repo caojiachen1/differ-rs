@@ -22,7 +22,9 @@ const EXTRACT_CHUNK_SIZE: usize = 64;
 const EXTRACT_CHUNK_SIZE_SMALL_INPUT: usize = 256;
 
 fn extract_chunk_size(input_width: usize) -> usize {
-    if input_width <= 256 {
+    if input_width <= 224 {
+        512
+    } else if input_width <= 256 {
         EXTRACT_CHUNK_SIZE_SMALL_INPUT
     } else {
         EXTRACT_CHUNK_SIZE
@@ -113,7 +115,7 @@ pub fn extract_features_for_folder_with_progress(
     mut on_progress: impl FnMut(ProgressInfo),
 ) -> Result<(Vec<(ImageEntry, Vec<f32>)>, usize, usize), String> {
     // Scan folder (no thumbnails: not needed for feature extraction)
-    let entries = image_service::scan_folder(folder_path, recursive, false)?;
+    let entries = image_service::scan_folder(folder_path, recursive)?;
     let total = entries.len();
 
     // Feature dimension of the active model configuration + feature mode:
