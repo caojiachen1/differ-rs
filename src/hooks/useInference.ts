@@ -125,10 +125,23 @@ export function useInference() {
   }, [setStatus, setError]);
 
   const searchSimilar = useCallback(async (sourcePath: string, folderPath: string, threshold: number) => {
-    setStatus('searching', 'Searching for similar images...');
-    setState(prev => ({ ...prev, progress: null }));
+    // Only surface the "searching" state if the search actually takes a
+    // while: snapshot-accelerated repeat searches return in tens of ms and
+    // must feel instant — flashing a loading overlay would ruin that.
+    let statusTimer: number | null = window.setTimeout(() => {
+      statusTimer = null;
+      setStatus('searching', 'Searching for similar images...');
+      setState(prev => ({ ...prev, progress: null }));
+    }, 250);
+    const cancelStatusTimer = () => {
+      if (statusTimer !== null) {
+        clearTimeout(statusTimer);
+        statusTimer = null;
+      }
+    };
     try {
       const results = await api.searchSimilar(sourcePath, folderPath, threshold);
+      cancelStatusTimer();
       setState(prev => ({
         ...prev,
         searchResults: results,
@@ -136,6 +149,7 @@ export function useInference() {
         statusMessage: `Found ${results.length} similar images`,
       }));
     } catch (e) {
+      cancelStatusTimer();
       setError(`Failed to search: ${e}`);
     }
   }, [setStatus, setError]);

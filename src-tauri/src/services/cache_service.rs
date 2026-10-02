@@ -14,6 +14,13 @@ use crate::state::CacheStats;
 /// Cache database file name (same as the .NET version).
 pub const CACHE_DB_NAME: &str = ".differ_cache.db";
 
+/// (mtime, size) identity of a folder's cache db, for cheap staleness checks
+/// of in-memory snapshots. None when no cache db exists yet.
+pub fn cache_db_identity(folder_path: &str) -> Option<(std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(get_cache_path(folder_path)).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
 /// Offset between the Windows FILETIME epoch (1601-01-01) and Unix epoch,
 /// in 100ns ticks.
 const FILETIME_UNIX_DIFF: i64 = 116_444_736_000_000_000;

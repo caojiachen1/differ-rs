@@ -16,12 +16,22 @@ pub async fn get_cache_stats(
 }
 
 /// Clear the cache for a folder.
+///
+/// Also drops the folder's in-memory feature snapshot — its db identity no
+/// longer matches after deletion, but removing it here avoids one stale
+/// lookup attempt.
 #[tauri::command]
 pub async fn clear_cache(
     folder_path: String,
+    state: tauri::State<'_, crate::state::AppState>,
 ) -> Result<(), String> {
+    let snapshots_arc = std::sync::Arc::clone(&state.folder_snapshots);
     tokio::task::spawn_blocking(move || {
-        cache_service::clear_cache(&folder_path)
+        let result = cache_service::clear_cache(&folder_path);
+        if let Ok(mut snapshots) = snapshots_arc.lock() {
+            snapshots.remove(&folder_path);
+        }
+        result
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?

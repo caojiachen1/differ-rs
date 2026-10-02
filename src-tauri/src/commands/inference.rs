@@ -204,6 +204,7 @@ pub async fn extract_features(
     state: State<'_, AppState>,
 ) -> Result<ProgressInfo, String> {
     let backend_arc = Arc::clone(&state.backend);
+    let snapshots_arc = Arc::clone(&state.folder_snapshots);
 
     let result = tokio::task::spawn_blocking(move || {
         let started = std::time::Instant::now();
@@ -223,8 +224,19 @@ pub async fn extract_features(
                     let _ = app.emit(PROGRESS_EVENT, &progress);
                 },
             )?;
-
         let total = entries.len();
+
+        // Keep the folder snapshot warm: everything is resolved now, so the
+        // next search skips the scan + cache load entirely.
+        {
+            let expected_len = similarity_service::expected_feature_len_for_backend(backend.as_ref());
+            let snapshot =
+                similarity_service::build_folder_snapshot(&folder_path, expected_len, entries);
+            let mut snapshots = snapshots_arc
+                .lock()
+                .map_err(|e| format!("Failed to lock snapshots: {}", e))?;
+            crate::state::store_snapshot(&mut snapshots, folder_path.clone(), snapshot);
+        }
         let elapsed = started.elapsed().as_secs_f64();
         Ok::<_, String>(ProgressInfo {
             total,
@@ -262,6 +274,7 @@ pub async fn search_similar(
     state: State<'_, AppState>,
 ) -> Result<Vec<SimilarityResult>, String> {
     let backend_arc = Arc::clone(&state.backend);
+    let snapshots_arc = Arc::clone(&state.folder_snapshots);
 
     let result = tokio::task::spawn_blocking(move || {
         let guard = backend_arc
@@ -271,7 +284,32 @@ pub async fn search_similar(
             .as_ref()
             .ok_or_else(|| "Model not loaded. Please load a model first.".to_string())?;
 
-        similarity_service::search_similar_in_folder(
+        // Fast path: an in-memory snapshot of this folder is still valid ->
+        // pure in-memory ranking, no scan and no database traffic. This is
+        // what makes repeat searches return before the UI could even paint
+        // a loading overlay.
+        {
+            let mut snapshots = snapshots_arc
+                .lock()
+                .map_err(|e| format!("Failed to lock snapshots: {}", e))?;
+            if let Some(snapshot) = snapshots.get(&folder_path) {
+                let expected_len =
+                    similarity_service::expected_feature_len_for_backend(backend.as_ref());
+                if snapshot.is_valid(&folder_path, expected_len) {
+                    if let Some(results) =
+                        similarity_service::search_snapshot(snapshot, &source_path, threshold)
+                    {
+                        return Ok(results);
+                    }
+                } else {
+                    snapshots.remove(&folder_path);
+                }
+            }
+        }
+
+        // Full path: scan + cache load (+ extraction of misses), then keep
+        // the refreshed snapshot warm for the next search.
+        let (results, snapshot) = similarity_service::search_similar_in_folder_with_snapshot(
             backend.as_ref(),
             &source_path,
             &folder_path,
@@ -279,7 +317,15 @@ pub async fn search_similar(
             |progress| {
                 let _ = app.emit(PROGRESS_EVENT, &progress);
             },
-        )
+        )?;
+
+        if let Some(snapshot) = snapshot {
+            let mut snapshots = snapshots_arc
+                .lock()
+                .map_err(|e| format!("Failed to lock snapshots: {}", e))?;
+            crate::state::store_snapshot(&mut snapshots, folder_path.clone(), snapshot);
+        }
+        Ok(results)
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?;

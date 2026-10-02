@@ -102,6 +102,12 @@ fn expected_feature_len(config: &crate::dinov3::config::ModelConfig) -> usize {
     }
 }
 
+/// Backend-facing variant of [`expected_feature_len`], used by command-layer
+/// snapshot validation without reaching into model internals.
+pub fn expected_feature_len_for_backend(backend: &dyn InferenceBackend) -> usize {
+    expected_feature_len(&backend.model_info().config)
+}
+
 /// Apply the feature mode to a freshly extracted all-token vector.
 fn apply_feature_mode(mut features: Vec<f32>, hidden_size: usize) -> Vec<f32> {
     if feature_pooling_enabled() && features.len() > hidden_size {
@@ -636,10 +642,24 @@ pub fn search_similar_in_folder(
     threshold: f32,
     on_progress: impl FnMut(ProgressInfo),
 ) -> Result<Vec<SimilarityResult>, String> {
+    search_similar_in_folder_with_snapshot(backend, source_path, folder_path, threshold, on_progress)
+        .map(|(results, _)| results)
+}
+
+/// Like [`search_similar_in_folder`], but also returns the folder's resolved
+/// feature snapshot (built after any extraction has drained to the cache), so
+/// callers can serve subsequent searches from memory.
+pub fn search_similar_in_folder_with_snapshot(
+    backend: &dyn InferenceBackend,
+    source_path: &str,
+    folder_path: &str,
+    threshold: f32,
+    on_progress: impl FnMut(ProgressInfo),
+) -> Result<(Vec<SimilarityResult>, Option<crate::state::FolderSnapshot>), String> {
     match search_similar_impl(Some(backend), None, source_path, folder_path, threshold, on_progress)
     {
-        Ok(CacheOnlyOutcome::Ready(results)) => Ok(results),
-        Ok(CacheOnlyOutcome::NeedsModel { .. }) => {
+        Ok((CacheOnlyOutcome::Ready(results), snapshot)) => Ok((results, snapshot)),
+        Ok((CacheOnlyOutcome::NeedsModel { .. }, _)) => {
             unreachable!("backend provided, so NeedsModel cannot be returned")
         }
         Err(e) => Err(e),
@@ -658,6 +678,79 @@ pub fn search_similar_cache_only(
     on_progress: impl FnMut(ProgressInfo),
 ) -> Result<CacheOnlyOutcome<Vec<SimilarityResult>>, String> {
     search_similar_impl(None, Some(expected_len), source_path, folder_path, threshold, on_progress)
+        .map(|(outcome, _)| outcome)
+}
+
+/// Build a snapshot from resolved folder items, capturing the cache-db
+/// identity as it is NOW (call after extraction writes have drained).
+pub fn build_folder_snapshot(
+    folder_path: &str,
+    expected_len: usize,
+    items: Vec<(ImageEntry, Vec<f32>)>,
+) -> crate::state::FolderSnapshot {
+    let (db_modified, db_len) = cache_service::cache_db_identity(folder_path)
+        .unwrap_or((std::time::SystemTime::UNIX_EPOCH, 0));
+    crate::state::FolderSnapshot {
+        db_modified,
+        db_len,
+        expected_len,
+        loaded_at: std::time::Instant::now(),
+        items,
+    }
+}
+
+/// Pure in-memory search against a [`crate::state::FolderSnapshot`]: no
+/// scan, no database, one stat of the query image.
+///
+/// Returns None when the source image isn't part of the snapshot or its file
+/// changed since the snapshot was built — the caller falls back to the full
+/// cache-aware path in that case.
+pub fn search_snapshot(
+    snapshot: &crate::state::FolderSnapshot,
+    source_path: &str,
+    threshold: f32,
+) -> Option<Vec<SimilarityResult>> {
+    let source_idx = snapshot.items.iter().position(|(entry, _)| {
+        std::path::Path::new(&entry.path) == std::path::Path::new(source_path)
+    })?;
+    let (source_entry, source_features) = &snapshot.items[source_idx];
+
+    // The query file must be unchanged since the snapshot was built
+    let meta = std::fs::metadata(source_path).ok()?;
+    if meta.len() != source_entry.file_size {
+        return None;
+    }
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if modified != source_entry.modified {
+        return None;
+    }
+
+    let source_path_norm = std::path::Path::new(source_path);
+    let mut results: Vec<SimilarityResult> = snapshot
+        .items
+        .par_iter()
+        .filter(|(entry, _)| std::path::Path::new(&entry.path) != source_path_norm)
+        .filter_map(|(entry, features)| {
+            if features.len() != source_features.len() {
+                return None;
+            }
+            let similarity = cosine_similarity(source_features, features);
+            (similarity >= threshold).then(|| SimilarityResult {
+                path: entry.path.clone(),
+                file_name: entry.file_name.clone(),
+                similarity,
+                thumbnail: None,
+            })
+        })
+        .collect();
+
+    results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+    Some(results)
 }
 
 fn search_similar_impl(
@@ -667,7 +760,7 @@ fn search_similar_impl(
     folder_path: &str,
     threshold: f32,
     mut on_progress: impl FnMut(ProgressInfo),
-) -> Result<CacheOnlyOutcome<Vec<SimilarityResult>>, String> {
+) -> Result<(CacheOnlyOutcome<Vec<SimilarityResult>>, Option<crate::state::FolderSnapshot>), String> {
     let expected_len = match (backend, expected_len_override) {
         (Some(b), _) => expected_feature_len(&b.model_info().config),
         (None, Some(len)) => len,
@@ -723,9 +816,9 @@ fn search_similar_impl(
         (f, true)
     } else {
         let Some(b) = backend else {
-            return Ok(CacheOnlyOutcome::NeedsModel {
+            return Ok((CacheOnlyOutcome::NeedsModel {
                 misses: folder_misses.len() + 1,
-            });
+            }, None));
         };
         (extract_and_store_single(b, source_path, &conn)?, false)
     };
@@ -733,7 +826,7 @@ fn search_similar_impl(
 
     if !folder_misses.is_empty() {
         let Some(b) = backend else {
-            return Ok(CacheOnlyOutcome::NeedsModel { misses: total_misses });
+            return Ok((CacheOnlyOutcome::NeedsModel { misses: total_misses }, None));
         };
         let extracted = extract_misses_with_backend(
             b,
@@ -747,7 +840,7 @@ fn search_similar_impl(
     }
 
     let mut results: Vec<SimilarityResult> = folder_items
-        .into_iter()
+        .iter()
         .filter(|(entry, _)| {
             std::path::Path::new(&entry.path) != std::path::Path::new(source_path)
         })
@@ -759,19 +852,24 @@ fn search_similar_impl(
                 );
                 return None;
             }
-            let similarity = cosine_similarity(&source_features, &features);
+            let similarity = cosine_similarity(&source_features, features);
             (similarity >= threshold).then(|| SimilarityResult {
-                path: entry.path,
-                file_name: entry.file_name,
+                path: entry.path.clone(),
+                file_name: entry.file_name.clone(),
                 similarity,
-                thumbnail: entry.thumbnail,
+                thumbnail: entry.thumbnail.clone(),
             })
         })
         .collect();
 
     results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
     // Thumbnails are fetched lazily by the UI, not blocking the result set
-    Ok(CacheOnlyOutcome::Ready(results))
+
+    // Snapshot the resolved state for instant repeat searches. Built after
+    // extraction writes drained (the writer thread joins before returning),
+    // so the db identity captured now matches the in-memory items.
+    let snapshot = build_folder_snapshot(folder_path, expected_len, folder_items);
+    Ok((CacheOnlyOutcome::Ready(results), Some(snapshot)))
 }
 
 /// Compare images between two folders.
@@ -946,5 +1044,72 @@ mod tests {
         // skip mismatched pairs instead of misindexing the GEMM.
         let best = pairwise_best_similarity(&[a.as_slice()], &[b.as_slice()]);
         assert_eq!(best[0], f32::MIN);
+    }
+
+    #[test]
+    fn test_search_snapshot_ranks_and_invalidates() {
+        use crate::state::ImageEntry;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mk_entry = |name: &str, data: &[u8]| -> (ImageEntry, String) {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, data).unwrap();
+            let meta = std::fs::metadata(&path).unwrap();
+            let modified = meta
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            (
+                ImageEntry {
+                    path: path.to_string_lossy().to_string(),
+                    file_name: name.to_string(),
+                    file_size: meta.len(),
+                    modified,
+                    thumbnail: None,
+                },
+                path.to_string_lossy().to_string(),
+            )
+        };
+
+        let (source_entry, source_path) = mk_entry("a.jpg", b"source-image-bytes");
+        let (dup_entry, _) = mk_entry("b.jpg", b"dup-image-bytes!!");
+        let (far_entry, _) = mk_entry("c.jpg", b"far-image-bytes!!");
+
+        let norm = |v: Vec<f32>| {
+            let mut v = v;
+            l2_normalize(&mut v);
+            v
+        };
+        let source_features = norm(vec![1.0, 0.0, 0.0]);
+        let dup_features = norm(vec![0.99, 0.1, 0.0]);
+        let far_features = norm(vec![0.0, 0.9, 0.1]);
+
+        let snapshot = crate::state::FolderSnapshot {
+            db_modified: std::time::SystemTime::UNIX_EPOCH,
+            db_len: 0,
+            expected_len: 3,
+            loaded_at: std::time::Instant::now(),
+            items: vec![
+                (source_entry.clone(), source_features.clone()),
+                (dup_entry, dup_features),
+                (far_entry, far_features),
+            ],
+        };
+
+        // Source excluded, near-duplicate ranked first at 0.9 threshold,
+        // far vector filtered out
+        let results = search_snapshot(&snapshot, &source_path, 0.9).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].similarity > 0.9);
+
+        // A source not in the snapshot declines (caller falls back)
+        let (_, stranger) = mk_entry("stranger.jpg", b"stranger-bytes");
+        assert!(search_snapshot(&snapshot, &stranger, 0.9).is_none());
+
+        // A modified source file invalidates the hit
+        std::fs::write(&source_path, b"source-image-bytes-CHANGED").unwrap();
+        assert!(search_snapshot(&snapshot, &source_path, 0.9).is_none());
     }
 }
