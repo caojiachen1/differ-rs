@@ -618,7 +618,10 @@ fn finish_compare(
         .collect();
 
     results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
-    attach_thumbnails(&mut results);
+    // No thumbnails here: generating them decodes every match at full
+    // resolution, which made result counts in the hundreds take seconds.
+    // Results come back immediately; the UI (or nothing, in the CLI) fetches
+    // thumbnails lazily for visible items via get_thumbnails_batch.
     results
 }
 
@@ -767,7 +770,7 @@ fn search_similar_impl(
         .collect();
 
     results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
-    attach_thumbnails(&mut results);
+    // Thumbnails are fetched lazily by the UI, not blocking the result set
     Ok(CacheOnlyOutcome::Ready(results))
 }
 
@@ -871,18 +874,10 @@ fn compare_folders_impl(
     )))
 }
 
-/// Fill in thumbnails for search results (in parallel).
-///
-/// Feature extraction scans without thumbnails for speed, so results only
-/// need them generated here, for the (few) matching images.
-fn attach_thumbnails(results: &mut [SimilarityResult]) {
-    results
-        .par_iter_mut()
-        .filter(|r| r.thumbnail.is_none())
-        .for_each(|r| {
-            r.thumbnail = image_service::thumbnail_base64(&r.path, 150);
-        });
-}
+/// (Thumbnails for search/compare results are generated on demand by the UI
+/// through `image_service::get_thumbnails_batch`; they used to be attached
+/// here, which decoded every match at full resolution before any result
+/// could be shown.)
 
 #[cfg(test)]
 mod tests {

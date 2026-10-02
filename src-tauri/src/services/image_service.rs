@@ -8,7 +8,6 @@ use image::codecs::jpeg::JpegEncoder;
 use image::DynamicImage;
 use walkdir::WalkDir;
 use crate::state::ImageEntry;
-
 /// Supported image file extensions.
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "bmp", "gif", "webp"];
 
@@ -188,6 +187,77 @@ pub fn get_thumbnails_batch(paths: &[String], size: u32, force: bool) -> Vec<Opt
     results
 }
 
+/// Thumbnail dimensions preserving aspect ratio (never 0).
+fn thumbnail_dims(width: u32, height: u32, size: u32) -> (u32, u32) {
+    let (width, height) = (width.max(1), height.max(1));
+    if width > height {
+        (size.max(1), ((height as f32 / width as f32 * size as f32) as u32).max(1))
+    } else {
+        (((width as f32 / height as f32 * size as f32) as u32).max(1), size.max(1))
+    }
+}
+
+/// Encode an RGB8 buffer as a JPEG, resizing to `tw x th` first.
+fn rgb_to_jpeg_thumbnail(pixels: Vec<u8>, w: u32, h: u32, tw: u32, th: u32) -> Result<Vec<u8>, String> {
+    let img = image::RgbImage::from_raw(w, h, pixels)
+        .ok_or_else(|| "decoded buffer does not match dimensions".to_string())?;
+    let resized = DynamicImage::ImageRgb8(img).thumbnail_exact(tw, th);
+    let mut buffer = Vec::new();
+    let encoder = JpegEncoder::new_with_quality(std::io::Cursor::new(&mut buffer), 80);
+    resized
+        .write_with_encoder(encoder)
+        .map_err(|e| format!("Failed to encode thumbnail: {}", e))?;
+    Ok(buffer)
+}
+
+/// JPEG fast path: libjpeg-turbo scaled DCT decode.
+///
+/// Decodes straight at 1/8, 1/4 or 1/2 of the source resolution (the
+/// largest scale factor that still covers the thumbnail), so a 24MP photo
+/// never materializes full-resolution pixels — roughly an order of
+/// magnitude faster than decode-then-resize. `None` when the content is
+/// not baseline JPEG or scaled decoding doesn't apply (lossless JPEG,
+/// source too small).
+fn jpeg_thumbnail_fast(bytes: &[u8], size: u32) -> Option<Vec<u8>> {
+    // Sniff JPEG magic from content (extension may lie, as elsewhere here)
+    if bytes.len() < 4 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
+        return None;
+    }
+    use turbojpeg::{Decompressor, PixelFormat, ScalingFactor};
+
+    let mut decompressor = Decompressor::new().ok()?;
+    let header = decompressor.read_header(bytes).ok()?;
+    if header.is_lossless {
+        return None;
+    }
+    let (tw, th) = thumbnail_dims(header.width as u32, header.height as u32, size);
+    // Ascending scale: the first factor that covers the thumbnail wins
+    // (cheapest decode that keeps enough resolution).
+    for factor in [
+        ScalingFactor::ONE_EIGHTH,
+        ScalingFactor::ONE_QUARTER,
+        ScalingFactor::ONE_HALF,
+    ] {
+        let w = factor.scale(header.width);
+        let h = factor.scale(header.height);
+        if (w as u32) < tw || (h as u32) < th {
+            continue;
+        }
+        decompressor.set_scaling_factor(factor).ok()?;
+        decompressor.set_fast_upsample(true).ok()?;
+        let mut img = turbojpeg::Image {
+            pixels: vec![0u8; w * h * 3],
+            width: w,
+            pitch: w * 3,
+            height: h,
+            format: PixelFormat::RGB,
+        };
+        decompressor.decompress(bytes, img.as_deref_mut()).ok()?;
+        return rgb_to_jpeg_thumbnail(img.pixels, w as u32, h as u32, tw, th).ok();
+    }
+    None
+}
+
 /// Generate a thumbnail for an image.
 ///
 /// # Arguments
@@ -203,19 +273,19 @@ pub fn generate_thumbnail(image_path: &str, size: u32) -> Result<Vec<u8>, String
     // Feature extraction already sniffs contents (load_from_memory), so this
     // also fixes thumbnails missing for images that extract just fine.
     let bytes = fs::read(image_path).map_err(|e| format!("Failed to read image: {}", e))?;
+
+    // JPEG (by content): scaled-DCT decode path, ~5-10x faster
+    if let Some(thumb) = jpeg_thumbnail_fast(&bytes, size) {
+        return Ok(thumb);
+    }
+
     let img = image::ImageReader::new(std::io::Cursor::new(&bytes))
         .with_guessed_format()
         .map_err(|e| format!("Failed to detect image format: {}", e))?
         .decode()
         .map_err(|e| format!("Failed to decode image: {}", e))?;
 
-    // Calculate new dimensions maintaining aspect ratio (never 0)
-    let (width, height) = (img.width().max(1), img.height().max(1));
-    let (new_width, new_height) = if width > height {
-        (size.max(1), ((height as f32 / width as f32 * size as f32) as u32).max(1))
-    } else {
-        (((width as f32 / height as f32 * size as f32) as u32).max(1), size.max(1))
-    };
+    let (new_width, new_height) = thumbnail_dims(img.width(), img.height(), size);
 
     // Fast integer downsampling (much faster than Lanczos3, fine for thumbnails)
     let resized = img.thumbnail_exact(new_width, new_height);
@@ -304,5 +374,38 @@ mod tests {
         wide.save(&wide_path).unwrap();
         let thumb = generate_thumbnail(wide_path.to_str().unwrap(), 150).unwrap();
         assert!(!thumb.is_empty());
+    }
+
+    #[test]
+    fn test_jpeg_thumbnail_fast_path() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Large JPEG: the scaled-DCT fast path must produce a decodable
+        // thumbnail no larger than `size` on either axis
+        let big_path = tmp.path().join("big.jpg");
+        let big = image::RgbImage::from_fn(1200, 900, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
+        });
+        big.save(&big_path).unwrap();
+        let bytes = fs::read(&big_path).unwrap();
+        let fast = jpeg_thumbnail_fast(&bytes, 150)
+            .expect("scaled-DCT path must handle a plain 1200x900 JPEG");
+        let decoded = image::load_from_memory(&fast).unwrap();
+        assert!(decoded.width() <= 150 && decoded.height() <= 150);
+        assert_eq!((decoded.width(), decoded.height()), (150, 112));
+
+        // Small JPEG: no scale factor covers the target, fast path declines
+        let small_path = tmp.path().join("small.jpg");
+        let small = image::RgbImage::from_pixel(100, 80, image::Rgb([1, 2, 3]));
+        small.save(&small_path).unwrap();
+        let small_bytes = fs::read(&small_path).unwrap();
+        assert!(jpeg_thumbnail_fast(&small_bytes, 150).is_none());
+        // ...and generate_thumbnail still serves it through the generic path
+        let thumb = generate_thumbnail(small_path.to_str().unwrap(), 150).unwrap();
+        assert!(!thumb.is_empty());
+
+        // Non-JPEG content is declined by the fast path
+        let png_bytes = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        assert!(jpeg_thumbnail_fast(&png_bytes, 150).is_none());
     }
 }

@@ -1115,6 +1115,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tempfile",
  "tokio",
+ "turbojpeg",
  "walkdir",
 ]
 

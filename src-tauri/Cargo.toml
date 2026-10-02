@@ -24,6 +24,9 @@ clap = { version = "4", features = ["derive"] }
 # step; plain Rust float-sum loops don't auto-vectorize without fast-math.
 # Already in the tree via candle, so this adds no new build inputs.
 gemm = "0.18"
+# Scaled-DCT JPEG decoding for thumbnails (1/8-1/2 of source resolution).
+# Already in the tree via dinov3-ggml, so this adds no new build inputs.
+turbojpeg = "1.5.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 walkdir = "2"
 base64 = "0.22"
