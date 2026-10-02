@@ -22,7 +22,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 use differ_tauri_lib::commands::inference::{
-    create_backend, download_model_for_backend, resolve_model_path,
+    create_backend, download_model_for_backend, resolve_expected_feature_len, resolve_model_path,
 };
 use differ_tauri_lib::dinov3::InferenceBackend;
 use differ_tauri_lib::services::{cache_service, similarity_service};
@@ -203,6 +203,17 @@ fn scan_progress_line(elapsed: f64, files: usize) -> String {
     format!("{files} images, {elapsed:.2} s ({:.0} files/s)", files as f64 / elapsed.max(1e-9))
 }
 
+/// Cached-feature dimension derivable without loading the model, if any.
+///
+/// Enables the cache-only fast path: when every involved image is already
+/// in its folder cache, compare/similar can answer without ever touching
+/// the GPU or loading model weights.
+fn feature_len_for_cache_only(backend: BackendKind, model: Option<&PathBuf>) -> Option<usize> {
+    resolve_model_path(backend.as_str(), model.and_then(|p| p.to_str()))
+        .ok()
+        .and_then(|path| resolve_expected_feature_len(&path))
+}
+
 fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
@@ -314,20 +325,50 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Command::Similar { source, folder, threshold, limit } => {
-            let backend = build_backend(cli.backend, &cli.model, cli.tier)?;
-            let backend = backend.as_ref();
             let source_str = source.to_string_lossy().to_string();
             let folder_str = folder.to_string_lossy().to_string();
             let mut progress = Progress::new("search", cli.quiet);
             let t = Instant::now();
-            let mut results = similarity_service::search_similar_in_folder(
-                backend,
-                &source_str,
-                &folder_str,
-                threshold,
-                |p| progress.tick(&p),
-            )
-            .map_err(anyhow::Error::msg)?;
+
+            // Fast path: fully cached -> answer without loading the model
+            let mut results = match feature_len_for_cache_only(cli.backend, cli.model.as_ref()) {
+                Some(len) => {
+                    match similarity_service::search_similar_cache_only(
+                        len,
+                        &source_str,
+                        &folder_str,
+                        threshold,
+                        |p| progress.tick(&p),
+                    ) {
+                        Ok(similarity_service::CacheOnlyOutcome::Ready(r)) => Some(r),
+                        Ok(similarity_service::CacheOnlyOutcome::NeedsModel { misses }) => {
+                            if !cli.quiet {
+                                eprintln!("[search] {misses} images not cached yet; loading model");
+                            }
+                            None
+                        }
+                        Err(e) => return Err(anyhow::Error::msg(e)),
+                    }
+                }
+                None => None,
+            };
+
+            let cache_only = results.is_some();
+            if results.is_none() {
+                let backend = build_backend(cli.backend, &cli.model, cli.tier)?;
+                let backend = backend.as_ref();
+                results = Some(
+                    similarity_service::search_similar_in_folder(
+                        backend,
+                        &source_str,
+                        &folder_str,
+                        threshold,
+                        |p| progress.tick(&p),
+                    )
+                    .map_err(anyhow::Error::msg)?,
+                );
+            }
+            let mut results = results.unwrap();
             if limit > 0 && results.len() > limit {
                 results.truncate(limit);
             }
@@ -352,6 +393,7 @@ fn run(cli: Cli) -> Result<()> {
                         "threshold": threshold,
                         "count": items.len(),
                         "elapsed_secs": elapsed,
+                        "cache_only": cache_only,
                         "results": items,
                     })
                 );
@@ -369,20 +411,50 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Command::Compare { source_folder, target_folder, threshold } => {
-            let backend = build_backend(cli.backend, &cli.model, cli.tier)?;
-            let backend = backend.as_ref();
             let src = source_folder.to_string_lossy().to_string();
             let tgt = target_folder.to_string_lossy().to_string();
             let mut progress = Progress::new("compare", cli.quiet);
             let t = Instant::now();
-            let results = similarity_service::compare_folders(
-                backend,
-                &src,
-                &tgt,
-                threshold,
-                |p| progress.tick(&p),
-            )
-            .map_err(anyhow::Error::msg)?;
+
+            // Fast path: fully cached -> answer without loading the model
+            let mut results = match feature_len_for_cache_only(cli.backend, cli.model.as_ref()) {
+                Some(len) => {
+                    match similarity_service::compare_folders_cache_only(
+                        len,
+                        &src,
+                        &tgt,
+                        threshold,
+                        |p| progress.tick(&p),
+                    ) {
+                        Ok(similarity_service::CacheOnlyOutcome::Ready(r)) => Some(r),
+                        Ok(similarity_service::CacheOnlyOutcome::NeedsModel { misses }) => {
+                            if !cli.quiet {
+                                eprintln!("[compare] {misses} images not cached yet; loading model");
+                            }
+                            None
+                        }
+                        Err(e) => return Err(anyhow::Error::msg(e)),
+                    }
+                }
+                None => None,
+            };
+
+            let cache_only = results.is_some();
+            if results.is_none() {
+                let backend = build_backend(cli.backend, &cli.model, cli.tier)?;
+                let backend = backend.as_ref();
+                results = Some(
+                    similarity_service::compare_folders(
+                        backend,
+                        &src,
+                        &tgt,
+                        threshold,
+                        |p| progress.tick(&p),
+                    )
+                    .map_err(anyhow::Error::msg)?,
+                );
+            }
+            let results = results.unwrap();
             let elapsed = t.elapsed().as_secs_f64();
 
             if cli.json {
@@ -408,6 +480,7 @@ fn run(cli: Cli) -> Result<()> {
                         "threshold": threshold,
                         "count": items.len(),
                         "elapsed_secs": elapsed,
+                        "cache_only": cache_only,
                         "matches": items,
                     })
                 );

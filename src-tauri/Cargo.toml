@@ -20,6 +20,10 @@ image = { workspace = true }
 fast_image_resize = "6"
 rayon = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+# SIMD GEMM kernels (hand-written AVX/NEON) for the folder-compare pairwise
+# step; plain Rust float-sum loops don't auto-vectorize without fast-math.
+# Already in the tree via candle, so this adds no new build inputs.
+gemm = "0.18"
 rusqlite = { version = "0.32", features = ["bundled"] }
 walkdir = "2"
 base64 = "0.22"

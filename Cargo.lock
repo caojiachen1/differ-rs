@@ -1101,6 +1101,7 @@ dependencies = [
  "dinov3-ggml",
  "env_logger",
  "fast_image_resize",
+ "gemm 0.18.2",
  "image",
  "log",
  "ort",

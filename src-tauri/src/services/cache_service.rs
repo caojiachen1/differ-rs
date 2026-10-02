@@ -12,7 +12,7 @@ use rusqlite::{params, Connection};
 use crate::state::CacheStats;
 
 /// Cache database file name (same as the .NET version).
-const CACHE_DB_NAME: &str = ".differ_cache.db";
+pub const CACHE_DB_NAME: &str = ".differ_cache.db";
 
 /// Offset between the Windows FILETIME epoch (1601-01-01) and Unix epoch,
 /// in 100ns ticks.
@@ -33,7 +33,7 @@ fn to_filetime(t: SystemTime) -> i64 {
 }
 
 /// File identity used as the cache validation key: (size, FILETIME mtime).
-fn file_identity(path: &str) -> Result<(i64, i64), String> {
+pub fn file_identity(path: &str) -> Result<(i64, i64), String> {
     let meta = std::fs::metadata(path)
         .map_err(|e| format!("Failed to stat {}: {}", path, e))?;
     let modified = meta.modified()
@@ -159,6 +159,75 @@ pub fn get_features(
     }
 }
 
+/// A cached feature row keyed by file path, with the file identity it was
+/// extracted from. Callers validate identity against the live file before use.
+pub struct CachedFeature {
+    pub file_size: i64,
+    pub last_modified: i64,
+    pub features: Vec<f32>,
+}
+
+/// Load every cached feature of a folder in one table scan.
+///
+/// Replaces the per-image stat + point-query pattern (one SQLite round trip
+/// and one stat per image): a single `SELECT` streams the whole table and
+/// rows are keyed by path for O(1) lookups during validation. Rows whose
+/// vector dimension doesn't match `expected_len` are skipped (stale
+/// configuration); file-identity validation stays with the caller because it
+/// must hit the live filesystem (and parallelizes there).
+pub fn load_all_features(
+    conn: &Connection,
+    expected_len: usize,
+) -> Result<std::collections::HashMap<String, CachedFeature>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT FilePath, FileSize, LastModified, DinoFeatures, DinoFeatureLength
+             FROM ImageFeatures",
+        )
+        .map_err(|e| format!("Failed to prepare cache scan: {}", e))?;
+
+    let mut rows = stmt
+        .query([])
+        .map_err(|e| format!("Failed to scan cache: {}", e))?;
+
+    let mut map = std::collections::HashMap::new();
+    loop {
+        let row = match rows
+            .next()
+            .map_err(|e| format!("Failed to read cache row: {}", e))?
+        {
+            Some(row) => row,
+            None => break,
+        };
+        let read = || -> rusqlite::Result<(String, i64, i64, Vec<u8>, i64)> {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        };
+        let (path, file_size, last_modified, bytes, len) =
+            read().map_err(|e| format!("Failed to read cache row: {}", e))?;
+        if len != expected_len as i64 {
+            continue;
+        }
+        let features: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        if features.len() != expected_len {
+            continue;
+        }
+        map.insert(
+            path,
+            CachedFeature { file_size, last_modified, features },
+        );
+    }
+    Ok(map)
+}
+
 /// Store a feature vector in the cache (INSERT OR REPLACE, .NET layout).
 pub fn store_features(conn: &Connection, path: &str, features: &[f32]) -> Result<(), String> {
     let (file_size, last_modified) = file_identity(path)?;
@@ -272,5 +341,26 @@ mod tests {
         drop(conn);
         clear_cache(folder_path).unwrap();
         assert_eq!(get_cache_stats(folder_path).unwrap().cached_count, 0);
+    }
+
+    #[test]
+    fn test_load_all_features_skips_wrong_dim() {
+        let temp_dir = tempdir().unwrap();
+        let folder_path = temp_dir.path().to_str().unwrap();
+
+        let img = temp_dir.path().join("a.jpg");
+        std::fs::write(&img, b"x").unwrap();
+        let img_str = img.to_str().unwrap();
+
+        let mut conn = open_cache(folder_path).unwrap();
+        store_features(&mut conn, img_str, &[1.0f32, 2.0]).unwrap();
+
+        let map = load_all_features(&conn, 2).unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map[img_str].features, vec![1.0, 2.0]);
+
+        // A stale-dimension row is excluded from the bulk map
+        let map = load_all_features(&conn, 4).unwrap();
+        assert!(map.is_empty());
     }
 }

@@ -93,6 +93,32 @@ pub fn download_model_for_backend(backend: &str) -> Result<PathBuf, String> {
     result.map_err(|e| format!("Failed to download {} model: {:#}", backend, e))
 }
 
+/// Derive the cached-feature dimension from the model file name WITHOUT
+/// loading any weights, so cache-only workflows (CLI compare/similar on
+/// fully cached folders) can skip model load entirely.
+///
+/// Only the CLS-pooled mode is derivable (dimension == hidden size, identical
+/// across input-resolution tiers); the legacy full-token mode and unknown
+/// model variants return None and the caller must construct the backend.
+pub fn resolve_expected_feature_len(model_path: &Path) -> Option<usize> {
+    if !crate::services::similarity_service::feature_pooling_enabled() {
+        return None;
+    }
+    let name = model_path.file_name()?.to_string_lossy().to_lowercase();
+    let hidden_size = if name.contains("vits16") {
+        384
+    } else if name.contains("vitb16") {
+        768
+    } else if name.contains("vitl16") {
+        1024
+    } else if name.contains("vith16") {
+        1280
+    } else {
+        return None;
+    };
+    Some(hidden_size)
+}
+
 /// Create and load an inference backend ("ggml", "onnx" or "candle").
 pub fn create_backend(backend: &str, model_path: &Path) -> Result<Box<dyn InferenceBackend>, String> {
     let mut b: Box<dyn InferenceBackend> = match backend {

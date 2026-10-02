@@ -13,7 +13,7 @@ fn test_scan_folder_speed() {
     }
 
     let t = Instant::now();
-    let entries = image_service::scan_folder(folder, true, true).unwrap();
+    let entries = image_service::scan_folder(folder, true).unwrap();
     let elapsed = t.elapsed();
 
     let with_thumbs = entries.iter().filter(|e| e.thumbnail.is_some()).count();
