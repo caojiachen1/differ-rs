@@ -18,7 +18,7 @@ import { SimilarityPanel } from './components/SimilarityPanel';
 import { StatusBar } from './components/StatusBar';
 import { SettingsDialog, type BackendKind } from './components/SettingsDialog';
 import { useInference } from './hooks/useInference';
-import { api, type SimilarityResult } from './services/tauriApi';
+import { api, type ImageEntry, type SimilarityResult } from './services/tauriApi';
 import './styles/fluent.css';
 
 function useThemeDetection() {
@@ -91,6 +91,14 @@ function AppContent() {
       thumbnail: result.thumbnail,
     });
   }, [state.images, setSourceImage]);
+
+  // Right-click -> set as source AND search immediately (no Compare click).
+  // Searches the loaded folder, exactly like the Compare button.
+  const handleDirectSearch = useCallback((image: ImageEntry) => {
+    if (!state.folderPath || !image.path) return;
+    setSourceImage(image);
+    searchSimilar(image.path, state.folderPath, similarity / 100);
+  }, [state.folderPath, setSourceImage, searchSimilar, similarity]);
 
   // Handle load model
   const handleLoadModel = useCallback(async (backend: BackendKind, path?: string) => {
@@ -171,6 +179,7 @@ function AppContent() {
               loadingMessage={loadingMessage}
               sourceImage={state.sourceImage}
               onSetSource={setSourceImage}
+              onSearchSimilar={handleDirectSearch}
             />
           </div>
 
@@ -189,6 +198,7 @@ function AppContent() {
               onCompare={handleCompare}
               similarity={similarity}
               onSetSource={handleSetSourceFromResult}
+              onSearchSimilar={handleDirectSearch}
             />
           </div>
         </div>

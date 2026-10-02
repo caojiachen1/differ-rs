@@ -40,6 +40,8 @@ interface ImageGridProps {
   loadingMessage?: string;
   sourceImage: ImageEntry | null;
   onSetSource: (image: ImageEntry) => void;
+  /** Right-click -> run the similarity search immediately with this image. */
+  onSearchSimilar: (image: ImageEntry) => void;
 }
 
 // Grid geometry (must match the CSS card size in styles)
@@ -53,6 +55,7 @@ export function ImageGrid({
   loadingMessage,
   sourceImage,
   onSetSource,
+  onSearchSimilar,
 }: ImageGridProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; image: ImageEntry } | null>(null);
@@ -381,6 +384,15 @@ export function ImageGrid({
           </MenuTrigger>
           <MenuPopover style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y }}>
             <MenuList>
+              <MenuItem
+                icon={<SearchRegular />}
+                onClick={() => {
+                  onSearchSimilar(contextMenu.image);
+                  setContextMenu(null);
+                }}
+              >
+                Search Similar
+              </MenuItem>
               <MenuItem
                 icon={<TargetRegular />}
                 onClick={() => {

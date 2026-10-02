@@ -17,6 +17,7 @@ import {
   TargetRegular,
   ImageRegular,
   ArrowRightRegular,
+  SearchRegular,
 } from '@fluentui/react-icons';
 import { open } from '@tauri-apps/plugin-dialog';
 import { api } from '../services/tauriApi';
@@ -33,6 +34,8 @@ interface SimilarityPanelProps {
   onCompare: () => void;
   similarity: number;
   onSetSource: (result: SimilarityResult) => void;
+  /** Right-click -> run the similarity search immediately with this result. */
+  onSearchSimilar: (image: ImageEntry) => void;
 }
 
 export function SimilarityPanel({
@@ -45,6 +48,7 @@ export function SimilarityPanel({
   onCompare,
   similarity,
   onSetSource,
+  onSearchSimilar,
 }: SimilarityPanelProps) {
   const [sourceThumbs, setSourceThumbs] = useState<Map<string, string>>(new Map());
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; result: SimilarityResult } | null>(null);
@@ -454,6 +458,21 @@ export function SimilarityPanel({
           </MenuTrigger>
           <MenuPopover style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y }}>
             <MenuList>
+              <MenuItem
+                icon={<SearchRegular />}
+                onClick={() => {
+                  onSearchSimilar({
+                    path: contextMenu.result.path,
+                    file_name: contextMenu.result.file_name,
+                    file_size: 0,
+                    modified: 0,
+                    thumbnail: contextMenu.result.thumbnail,
+                  });
+                  setContextMenu(null);
+                }}
+              >
+                Search Similar
+              </MenuItem>
               <MenuItem
                 icon={<TargetRegular />}
                 onClick={() => {
