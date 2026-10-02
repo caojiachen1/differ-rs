@@ -57,6 +57,11 @@ function AppContent() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const isLoading = state.status !== 'idle' && state.status !== 'error';
+  // Overlays are panel-scoped: folder-level operations cover the left grid,
+  // search-level operations cover only the results panel — a running search
+  // must not freeze browsing in the grid.
+  const isFolderLoading = state.status === 'scanning' || state.status === 'extracting';
+  const isResultsLoading = state.status === 'searching' || state.status === 'comparing';
 
   // Handle folder selection
   const handleFolderSelect = useCallback((path: string) => {
@@ -175,7 +180,7 @@ function AppContent() {
           <div className="left-panel">
             <ImageGrid
               images={state.images}
-              isLoading={isLoading}
+              isLoading={isFolderLoading}
               loadingMessage={loadingMessage}
               sourceImage={state.sourceImage}
               onSetSource={setSourceImage}
@@ -192,7 +197,7 @@ function AppContent() {
               sourceImage={state.sourceImage}
               results={state.searchResults}
               compareFolderPath={state.compareFolderPath}
-              isLoading={isLoading}
+              isLoading={isResultsLoading}
               loadingMessage={loadingMessage}
               onSelectCompareFolder={setCompareFolderPath}
               onCompare={handleCompare}

@@ -78,6 +78,9 @@ export function useInference() {
     setState(prev => ({ ...prev, status: 'error', statusMessage: 'Error', error }));
   }, []);
 
+  /** Show the busy overlay only after the operation outlives this delay. */
+  const STATUS_DELAY_MS = 1000;
+
   const scanFolder = useCallback(async (path: string, recursive: boolean) => {
     setStatus('scanning', 'Scanning folder...');
     try {
@@ -132,7 +135,7 @@ export function useInference() {
       statusTimer = null;
       setStatus('searching', 'Searching for similar images...');
       setState(prev => ({ ...prev, progress: null }));
-    }, 250);
+    }, STATUS_DELAY_MS);
     const cancelStatusTimer = () => {
       if (statusTimer !== null) {
         clearTimeout(statusTimer);
@@ -155,9 +158,20 @@ export function useInference() {
   }, [setStatus, setError]);
 
   const compareFolders = useCallback(async (source: string, target: string, threshold: number) => {
-    setStatus('comparing', 'Comparing folders...');
+    // Same deferred overlay as searchSimilar: fast compares must not flash
+    let statusTimer: number | null = window.setTimeout(() => {
+      statusTimer = null;
+      setStatus('comparing', 'Comparing folders...');
+    }, STATUS_DELAY_MS);
+    const cancelStatusTimer = () => {
+      if (statusTimer !== null) {
+        clearTimeout(statusTimer);
+        statusTimer = null;
+      }
+    };
     try {
       const results = await api.compareFolders(source, target, threshold);
+      cancelStatusTimer();
       setState(prev => ({
         ...prev,
         searchResults: results,
@@ -165,6 +179,7 @@ export function useInference() {
         statusMessage: `Found ${results.length} similar images`,
       }));
     } catch (e) {
+      cancelStatusTimer();
       setError(`Failed to compare folders: ${e}`);
     }
   }, [setStatus, setError]);
