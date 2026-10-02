@@ -1130,7 +1130,7 @@ dependencies = [
 [[package]]
 name = "dinov3-ggml"
 version = "0.1.0"
-source = "git+https://github.com/caojiachen1/dinov3-ggml#88a881fe019bd975f5c45a22a8dc7afa8c288847"
+source = "git+https://github.com/caojiachen1/dinov3-ggml#9bed0e8a5dfb6af6bc7189aa8cd743e4d4720561"
 dependencies = [
  "anyhow",
  "cc",
